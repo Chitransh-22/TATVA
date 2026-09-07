@@ -113,6 +113,35 @@ CREATE TABLE IF NOT EXISTS weather_anomalies (
 
 CREATE INDEX IF NOT EXISTS idx_anomaly_time ON weather_anomalies (observation_time);
 CREATE INDEX IF NOT EXISTS idx_anomaly_coords ON weather_anomalies (latitude, longitude);
+
+-- 6. Boundary Tables for States and Districts
+CREATE TABLE IF NOT EXISTS boundary_states (
+    state_name VARCHAR(128) PRIMARY KEY,
+    geom GEOMETRY(Geometry, 4326) NOT NULL,
+    min_lat DOUBLE PRECISION,
+    max_lat DOUBLE PRECISION,
+    min_lon DOUBLE PRECISION,
+    max_lon DOUBLE PRECISION,
+    center_lat DOUBLE PRECISION,
+    center_lon DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_boundary_states_geom ON boundary_states USING GIST (geom);
+
+CREATE TABLE IF NOT EXISTS boundary_districts (
+    id SERIAL PRIMARY KEY,
+    state_name VARCHAR(128) NOT NULL,
+    district_name VARCHAR(128) NOT NULL,
+    geom GEOMETRY(Geometry, 4326) NOT NULL,
+    min_lat DOUBLE PRECISION,
+    max_lat DOUBLE PRECISION,
+    min_lon DOUBLE PRECISION,
+    max_lon DOUBLE PRECISION,
+    center_lat DOUBLE PRECISION,
+    center_lon DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_boundary_districts_geom ON boundary_districts USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_boundary_districts_state ON boundary_districts (state_name);
+CREATE INDEX IF NOT EXISTS idx_boundary_districts_name ON boundary_districts (district_name);
 """
 
 

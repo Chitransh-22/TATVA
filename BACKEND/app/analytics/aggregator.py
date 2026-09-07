@@ -29,10 +29,84 @@ class AnalyticsAggregator:
                 month_start = obs_time - timedelta(days=30)
                 await self._compute_and_save_bucket(session, "30DAY", month_start, obs_time)
 
+                # 4. National & State regional summaries for the Map API
+                await self.compute_regional_summaries(session, obs_time)
+
                 await session.commit()
                 logger.info("Analytics rollups successfully computed and committed.")
         except Exception as e:
             logger.error(f"Error computing rollups: {e}")
+
+    async def compute_regional_summaries(self, session, obs_time: datetime, granule_id: Optional[str] = None) -> None:
+        """Compute national and state-level rollups for weather_region_summary table."""
+        try:
+            # 1. National summary
+            nat_sql = text("""
+                INSERT INTO weather_region_summary (
+                    observation_time, granule_id, region_type, region_name, state_name,
+                    avg_precipitation, max_precipitation, min_precipitation, total_points, rain_category
+                )
+                SELECT
+                    :obs_time, :granule_id, 'NATIONAL', 'India', 'India',
+                    ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2),
+                    ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2),
+                    ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2),
+                    COUNT(*),
+                    CASE
+                        WHEN COALESCE(MAX(precipitation), 0) >= 100 THEN 'Very Heavy Torrential Downpour'
+                        WHEN COALESCE(MAX(precipitation), 0) >= 50 THEN 'Heavy Rainfall'
+                        WHEN COALESCE(MAX(precipitation), 0) >= 15 THEN 'Moderate Rain'
+                        WHEN COALESCE(MAX(precipitation), 0) >= 1 THEN 'Light Rain'
+                        ELSE 'Clear / Dry'
+                    END
+                FROM precipitation_observations
+                WHERE observation_time = :obs_time
+                ON CONFLICT (observation_time, region_type, region_name, state_name) DO UPDATE
+                SET avg_precipitation = EXCLUDED.avg_precipitation,
+                    max_precipitation = EXCLUDED.max_precipitation,
+                    min_precipitation = EXCLUDED.min_precipitation,
+                    total_points = EXCLUDED.total_points,
+                    rain_category = EXCLUDED.rain_category;
+            """)
+            await session.execute(nat_sql, {"obs_time": obs_time, "granule_id": granule_id or "IMERG_LIVE"})
+
+            # 2. State summaries (for all 36 states)
+            states_sql = text("""
+                INSERT INTO weather_region_summary (
+                    observation_time, granule_id, region_type, region_name, state_name,
+                    avg_precipitation, max_precipitation, min_precipitation, total_points, rain_category
+                )
+                SELECT
+                    :obs_time, :granule_id, 'STATE', s.state_name, s.state_name,
+                    ROUND(COALESCE(AVG(o.precipitation), 0)::numeric, 2),
+                    ROUND(COALESCE(MAX(o.precipitation), 0)::numeric, 2),
+                    ROUND(COALESCE(MIN(o.precipitation), 0)::numeric, 2),
+                    COUNT(o.latitude),
+                    CASE
+                        WHEN COALESCE(MAX(o.precipitation), 0) >= 100 THEN 'Very Heavy Torrential Downpour'
+                        WHEN COALESCE(MAX(o.precipitation), 0) >= 50 THEN 'Heavy Rainfall'
+                        WHEN COALESCE(MAX(o.precipitation), 0) >= 15 THEN 'Moderate Rain'
+                        WHEN COALESCE(MAX(o.precipitation), 0) >= 1 THEN 'Light Rain'
+                        ELSE 'Clear / Dry'
+                    END
+                FROM boundary_states s
+                LEFT JOIN precipitation_observations o ON
+                    o.observation_time = :obs_time
+                    AND o.latitude BETWEEN s.min_lat AND s.max_lat
+                    AND o.longitude BETWEEN s.min_lon AND s.max_lon
+                    AND ST_Intersects(o.geom, s.geom)
+                GROUP BY s.state_name
+                ON CONFLICT (observation_time, region_type, region_name, state_name) DO UPDATE
+                SET avg_precipitation = EXCLUDED.avg_precipitation,
+                    max_precipitation = EXCLUDED.max_precipitation,
+                    min_precipitation = EXCLUDED.min_precipitation,
+                    total_points = EXCLUDED.total_points,
+                    rain_category = EXCLUDED.rain_category;
+            """)
+            await session.execute(states_sql, {"obs_time": obs_time, "granule_id": granule_id or "IMERG_LIVE"})
+            logger.info(f"Regional summaries updated for observation {obs_time.isoformat()}")
+        except Exception as err:
+            logger.warning(f"Regional summary computation note: {err}")
 
     async def _compute_and_save_bucket(
         self,
