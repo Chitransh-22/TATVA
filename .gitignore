@@ -1,2 +1,13 @@
 .env
+BACKEND/data/raw/*
+!BACKEND/data/raw/.gitkeep
+BACKEND/data/transformed/*
+!BACKEND/data/transformed/.gitkeep
+BACKEND/data/extracted/*
+!BACKEND/data/extracted/.gitkeep
+BACKEND/data/dlq/*
+!BACKEND/data/dlq/.gitkeep
 BACKEND/data/IMERG_7day_latlon_combined.csv
+__pycache__/
+*.pyc
+.venv/
