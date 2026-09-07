@@ -155,6 +155,17 @@ class WeatherIngestionPipeline:
                 await analytics_aggregator.detect_anomalies_for_granule(granule_id, obs_time)
             except Exception as ex:
                 logger.error(f"Error computing analytics post-load: {ex}")
+
+            # Notify connected map clients via SSE broadcaster
+            try:
+                from app.api.broadcaster import weather_broadcaster
+                await weather_broadcaster.broadcast("new_granule", {
+                    "granule_id": granule_id,
+                    "observation_time": obs_time.isoformat(),
+                    "status": "COMPLETED"
+                })
+            except Exception as b_err:
+                logger.debug(f"SSE broadcast notice skipped: {b_err}")
         else:
             raise RuntimeError(f"Bulk loading failed for granule {granule_id}")
 
@@ -219,6 +230,15 @@ class WeatherIngestionPipeline:
         if loaded:
             await analytics_aggregator.compute_rollups_for_observation(obs_time)
             await analytics_aggregator.detect_anomalies_for_granule(granule_id, obs_time)
+            try:
+                from app.api.broadcaster import weather_broadcaster
+                await weather_broadcaster.broadcast("new_granule", {
+                    "granule_id": granule_id,
+                    "observation_time": obs_time.isoformat(),
+                    "status": "COMPLETED"
+                })
+            except Exception as b_err:
+                logger.debug(f"SSE broadcast notice skipped: {b_err}")
 
         return loaded
 

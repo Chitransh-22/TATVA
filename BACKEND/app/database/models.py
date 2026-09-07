@@ -130,3 +130,31 @@ class WeatherAnomaly(Base):
     __table_args__ = (
         Index("idx_anomaly_time_coords", "observation_time", "latitude", "longitude"),
     )
+
+
+class BoundaryState(Base):
+    """India state boundaries and bounding boxes."""
+    __tablename__ = "boundary_states"
+
+    state_name = Column(String(128), primary_key=True)
+    min_lat = Column(Float, nullable=True)
+    max_lat = Column(Float, nullable=True)
+    min_lon = Column(Float, nullable=True)
+    max_lon = Column(Float, nullable=True)
+    center_lat = Column(Float, nullable=True)
+    center_lon = Column(Float, nullable=True)
+
+
+class BoundaryDistrict(Base):
+    """India district boundaries and bounding boxes."""
+    __tablename__ = "boundary_districts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    state_name = Column(String(128), nullable=False, index=True)
+    district_name = Column(String(128), nullable=False, index=True)
+    min_lat = Column(Float, nullable=True)
+    max_lat = Column(Float, nullable=True)
+    min_lon = Column(Float, nullable=True)
+    max_lon = Column(Float, nullable=True)
+    center_lat = Column(Float, nullable=True)
+    center_lon = Column(Float, nullable=True)
