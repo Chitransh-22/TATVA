@@ -1,97 +1,135 @@
+/* Global Base Styles */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  
+  --color-brand: #0284c7;
+  --color-brand-hover: #0369a1;
+  --color-slate-900: #0f172a;
+  --color-slate-800: #1e293b;
+  --color-slate-700: #334155;
+  --color-slate-600: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-400: #94a3b8;
+  --color-slate-300: #cbd5e1;
+  --color-slate-200: #e2e8f0;
+  --color-slate-100: #f1f5f9;
+  --color-slate-50: #f8fafc;
+}
+
 html, body, #root {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, Arial, sans-serif;
-  background-color: #f1f5f9;
-  color: #0f172a;
+  font-family: var(--font-sans);
+  background-color: var(--color-slate-100);
+  color: var(--color-slate-900);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 * {
   box-sizing: border-box;
 }
 
-/* Tooltip style for Leaflet */
-.weather-map-tooltip {
-  background: rgba(15, 23, 42, 0.92) !important;
-  backdrop-filter: blur(6px) !important;
-  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Leaflet Clean Tooltip Styling */
+.leaflet-tooltip-clean {
+  background: rgba(15, 23, 42, 0.94) !important;
+  backdrop-filter: blur(8px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
   color: #ffffff !important;
-  font-size: 11px !important;
-  line-height: 1.3 !important;
   padding: 6px 10px !important;
   border-radius: 6px !important;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35) !important;
   pointer-events: none !important;
+  font-family: var(--font-sans) !important;
 }
 
-.weather-map-tooltip::before {
-  border-top-color: rgba(15, 23, 42, 0.92) !important;
+.leaflet-tooltip-clean::before {
+  border-top-color: rgba(15, 23, 42, 0.94) !important;
 }
 
-.compact-weather-tooltip {
+.weather-map-tooltip {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 130px;
+  min-width: 140px;
 }
 
-.compact-weather-tooltip .tooltip-header {
+.weather-map-tooltip .tooltip-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-  padding-bottom: 3px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  padding-bottom: 4px;
 }
 
-.compact-weather-tooltip .tooltip-title {
+.weather-map-tooltip .tooltip-title {
   font-weight: 700;
   color: #38bdf8;
   font-size: 11px;
   white-space: nowrap;
 }
 
-.compact-weather-tooltip .tooltip-category {
+.weather-map-tooltip .tooltip-category {
   font-size: 9px;
   font-weight: 600;
-  color: #cbd5e1;
-  background: rgba(255, 255, 255, 0.1);
-  padding: 1px 4px;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 1px 5px;
   border-radius: 3px;
   white-space: nowrap;
 }
 
-.compact-weather-tooltip .tooltip-body {
+.weather-map-tooltip .tooltip-body {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
   font-size: 10px;
 }
 
-.compact-weather-tooltip .tooltip-stat {
+.weather-map-tooltip .tooltip-stat {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
 }
 
-.compact-weather-tooltip .tooltip-label {
+.weather-map-tooltip .tooltip-label {
   font-size: 8px;
   text-transform: uppercase;
   color: #94a3b8;
   font-weight: 600;
+  letter-spacing: 0.3px;
 }
 
-.compact-weather-tooltip .tooltip-value {
+.weather-map-tooltip .tooltip-val {
   font-weight: 700;
-  color: #f1f5f9;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #f8fafc;
+  font-family: var(--font-mono);
 }
 
-.compact-weather-tooltip .tooltip-value.highlight {
+.weather-map-tooltip .tooltip-val.highlight {
   color: #38bdf8;
 }
-

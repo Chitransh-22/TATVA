@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Navbar } from './components/Navbar';
+import { Navbar, type BasemapOption } from './components/Navbar';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { WeatherMap } from './components/WeatherMap';
 import { AnalyticsSidebar } from './components/AnalyticsSidebar';
@@ -31,7 +31,7 @@ export function App() {
   const [loadingMsg, setLoadingMsg] = useState<string>('Connecting to live NASA IMERG pipeline...');
   const [error, setError] = useState<string | null>(null);
   const [opacity, setOpacity] = useState<number>(0.85);
-  const [basemap, setBasemap] = useState<'carto' | 'esri' | 'osm'>('carto');
+  const [basemap, setBasemap] = useState<BasemapOption>('carto');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
   // Ref to track latest selection for SSE live updates
@@ -75,7 +75,7 @@ export function App() {
     setLoadingMsg('Loading live India precipitation overview...');
     setError(null);
     try {
-      let url = '/api/weather/india/overview?grid_step=0.2';
+      let url = '/api/weather/india/overview?grid_step=0.5';
       if (time) url += `&observation_time=${encodeURIComponent(time)}`;
 
       const res = await fetch(url);
@@ -163,7 +163,7 @@ export function App() {
             console.log('⚡ [Live SSE] Received new granule event:', payload.data);
             fetchMetadata();
 
-            // Seamlessly refresh current view with latest data without reload
+            // Refresh current view seamlessly
             const { selectedState: curState, selectedDistrict: curDist } = selectionRef.current;
             if (curDist && curState) {
               fetchDistrict(curState, curDist, payload.data.observation_time);
@@ -174,7 +174,7 @@ export function App() {
             }
           }
         } catch (e) {
-          // Keepalive ping or plain message
+          // Heartbeat keepalive ping
         }
       };
 
@@ -183,7 +183,6 @@ export function App() {
           eventSource.close();
           eventSource = null;
         }
-        // Attempt reconnect in 10s
         reconnectTimeout = setTimeout(connectSSE, 10000);
       };
     };
@@ -203,38 +202,38 @@ export function App() {
   }, [fetchMetadata, fetchOverview, fetchState, fetchDistrict]);
 
   // =========================================================================
-  // User Actions / Drill-down Handlers
+  // Drill-down Handlers
   // =========================================================================
 
-  const handleSelectState = (stateName: string) => {
+  const handleSelectState = useCallback((stateName: string) => {
     setSelectedState(stateName);
     setSelectedDistrict(null);
     setDistrictData(null);
     fetchState(stateName, selectedTime);
-  };
+  }, [fetchState, selectedTime]);
 
-  const handleSelectDistrict = (districtName: string) => {
+  const handleSelectDistrict = useCallback((districtName: string) => {
     if (!selectedState) return;
     setSelectedDistrict(districtName);
     fetchDistrict(selectedState, districtName, selectedTime);
-  };
+  }, [fetchDistrict, selectedState, selectedTime]);
 
-  const handleSelectIndia = () => {
+  const handleSelectIndia = useCallback(() => {
     setSelectedState(null);
     setSelectedDistrict(null);
     setStateData(null);
     setDistrictData(null);
     fetchOverview(selectedTime);
-  };
+  }, [fetchOverview, selectedTime]);
 
-  const handleBackToState = () => {
+  const handleBackToState = useCallback(() => {
     if (!selectedState) return;
     setSelectedDistrict(null);
     setDistrictData(null);
     fetchState(selectedState, selectedTime);
-  };
+  }, [fetchState, selectedState, selectedTime]);
 
-  const handleTimeChange = (time: string) => {
+  const handleTimeChange = useCallback((time: string) => {
     setSelectedTime(time);
     if (selectedDistrict && selectedState) {
       fetchDistrict(selectedState, selectedDistrict, time);
@@ -243,41 +242,47 @@ export function App() {
     } else {
       fetchOverview(time);
     }
-  };
+  }, [fetchDistrict, fetchOverview, fetchState, selectedDistrict, selectedState]);
 
   return (
     <div className="app-root">
+      {/* Modern Slim Navbar */}
       <Navbar
         metadata={metadata}
         selectedTime={selectedTime}
         onTimeChange={handleTimeChange}
         onFitIndia={handleSelectIndia}
-        onReset={handleSelectIndia}
         opacity={opacity}
         onOpacityChange={setOpacity}
         basemap={basemap}
         onBasemapChange={setBasemap}
-      />
-
-      <Breadcrumbs
-        selectedState={selectedState}
-        selectedDistrict={selectedDistrict}
-        onSelectIndia={handleSelectIndia}
-        onSelectState={handleSelectState}
+        isSidebarCollapsed={isSidebarCollapsed}
+        onToggleSidebar={() => setIsSidebarCollapsed((prev) => !prev)}
       />
 
       {error && (
         <div className="error-banner">
-          <span>⚠️ {error}</span>
+          <span className="error-text">⚠️ {error}</span>
           <button type="button" className="btn-retry" onClick={() => fetchOverview(selectedTime)}>
             Retry
           </button>
         </div>
       )}
 
+      {/* Main Workspace (Map + Analytics Sidebar) */}
       <main className="main-layout">
-        <div className="map-panel">
+        <div className={`map-panel ${isSidebarCollapsed ? 'full-width' : ''}`}>
           <LoadingOverlay isLoading={isLoading} message={loadingMsg} />
+
+          {/* Floating Breadcrumb Trail */}
+          <Breadcrumbs
+            selectedState={selectedState}
+            selectedDistrict={selectedDistrict}
+            onSelectIndia={handleSelectIndia}
+            onSelectState={handleSelectState}
+          />
+
+          {/* Weather Map Viewport */}
           <WeatherMap
             overviewData={overviewData}
             stateData={stateData}
@@ -286,11 +291,13 @@ export function App() {
             selectedDistrict={selectedDistrict}
             onSelectState={handleSelectState}
             onSelectDistrict={handleSelectDistrict}
+            onFitIndia={handleSelectIndia}
             opacity={opacity}
             basemap={basemap}
           />
         </div>
 
+        {/* Collapsible Analytics Sidebar */}
         <AnalyticsSidebar
           selectedState={selectedState}
           selectedDistrict={selectedDistrict}

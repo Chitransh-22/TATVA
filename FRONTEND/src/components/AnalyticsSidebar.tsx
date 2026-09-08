@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import type {
   NationalSummary,
   StateSummary,
   DistrictSummary,
   HistoricalTimelinePoint,
 } from '../types';
+import { getCategoryBadgeStyle } from './Legend';
 
 interface AnalyticsSidebarProps {
   selectedState: string | null;
@@ -60,211 +61,295 @@ export const AnalyticsSidebar: React.FC<AnalyticsSidebarProps> = ({
   isCollapsed,
   onToggleCollapse,
 }) => {
-  if (isCollapsed) {
-    return (
-      <button
-        type="button"
-        className="sidebar-expand-btn"
-        onClick={onToggleCollapse}
-        title="Open Analytics Panel"
-      >
-        📊 Analytics &bull; Open
-      </button>
-    );
-  }
+  const [districtSearch, setDistrictSearch] = useState('');
 
-  // Top 5 states by rainfall
-  const topStates = [...stateSummaries]
-    .sort((a, b) => b.max_precipitation - a.max_precipitation)
-    .slice(0, 6);
+  // Top states sorted by peak rainfall
+  const topStates = useMemo(() => {
+    return [...stateSummaries]
+      .sort((a, b) => b.max_precipitation - a.max_precipitation)
+      .slice(0, 6);
+  }, [stateSummaries]);
 
-  // Maximum value for historical bar scaling
-  const maxHistP = Math.max(1, ...historicalTimeline.map((h) => h.avg_precipitation));
+  // Filtered districts for active state
+  const filteredDistricts = useMemo(() => {
+    const list = [...districtSummaries].sort((a, b) => b.max_precipitation - a.max_precipitation);
+    if (!districtSearch.trim()) return list;
+    const query = districtSearch.toLowerCase();
+    return list.filter((d) => d.district_name.toLowerCase().includes(query));
+  }, [districtSummaries, districtSearch]);
+
+  // Max value for historical bar scaling
+  const maxHistP = useMemo(() => {
+    return Math.max(1, ...historicalTimeline.map((h) => h.avg_precipitation));
+  }, [historicalTimeline]);
+
+  if (isCollapsed) return null;
+
+  // Active Summary computation
+  const activeSummary = selectedDistrict
+    ? districtSummary
+    : selectedState
+    ? stateSummary
+    : nationalSummary;
+
+  const badgeStyle = activeSummary?.rain_category
+    ? getCategoryBadgeStyle(activeSummary.rain_category)
+    : { bg: '#f1f5f9', text: '#64748b', border: '#cbd5e1' };
 
   return (
-    <aside className="analytics-sidebar">
+    <aside className="analytics-sidebar" aria-label="Weather Intelligence Sidebar">
+      {/* Sidebar Header */}
       <div className="sidebar-header">
-        <div className="header-title-row">
-          <span className="sidebar-icon">📊</span>
-          <h2 className="sidebar-title">
-            {!selectedState && "India Weather Overview"}
-            {selectedState && !selectedDistrict && `${selectedState}`}
-            {selectedDistrict && `${selectedDistrict}, ${selectedState}`}
-          </h2>
+        <div className="sidebar-title-row">
+          <div className="sidebar-heading-wrap">
+            <span className="sidebar-level-badge">
+              {!selectedState && 'NATIONAL'}
+              {selectedState && !selectedDistrict && 'STATE'}
+              {selectedDistrict && 'DISTRICT'}
+            </span>
+            <h2 className="sidebar-title" title={selectedDistrict || selectedState || 'National Overview'}>
+              {!selectedState && 'India Overview'}
+              {selectedState && !selectedDistrict && selectedState}
+              {selectedDistrict && `${selectedDistrict}`}
+            </h2>
+          </div>
+
           <button
             type="button"
             className="btn-close-sidebar"
             onClick={onToggleCollapse}
-            title="Minimize"
+            title="Collapse Sidebar"
+            aria-label="Close sidebar"
           >
             ✕
           </button>
         </div>
 
-        <div className="header-nav-row">
-          {selectedDistrict && (
-            <button type="button" className="btn-back" onClick={onBackToState}>
-              &larr; Back to {selectedState}
-            </button>
-          )}
-          {selectedState && !selectedDistrict && (
-            <button type="button" className="btn-back" onClick={onBackToIndia}>
-              &larr; Back to India Overview
-            </button>
-          )}
-        </div>
+        {/* Back Navigation Button */}
+        {(selectedState || selectedDistrict) && (
+          <div className="sidebar-nav-actions">
+            {selectedDistrict ? (
+              <button type="button" className="btn-sidebar-back" onClick={onBackToState}>
+                <svg className="back-icon" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M9.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L7.414 9H15a1 1 0 110 2H7.414l2.293 2.293a1 1 0 010 1.414z" clipRule="evenodd" />
+                </svg>
+                <span>Back to {selectedState}</span>
+              </button>
+            ) : (
+              <button type="button" className="btn-sidebar-back" onClick={onBackToIndia}>
+                <svg className="back-icon" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M9.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L7.414 9H15a1 1 0 110 2H7.414l2.293 2.293a1 1 0 010 1.414z" clipRule="evenodd" />
+                </svg>
+                <span>Back to India</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="sidebar-content">
-        {/* LEVEL 1: NATIONAL OVERVIEW */}
-        {!selectedState && nationalSummary && (
-          <>
-            <div className="stat-cards-grid">
-              <div className="stat-card">
-                <span className="stat-label">National Average</span>
-                <span className="stat-value">{nationalSummary.avg_precipitation.toFixed(2)} mm</span>
-              </div>
-              <div className="stat-card highlight">
-                <span className="stat-label">Peak Intensity</span>
-                <span className="stat-value">{nationalSummary.max_precipitation.toFixed(1)} mm</span>
-              </div>
-              <div className="stat-card">
-                <span className="stat-label">Observed Grids</span>
-                <span className="stat-value">{nationalSummary.total_points.toLocaleString()}</span>
-              </div>
-              <div className="stat-card">
-                <span className="stat-label">Overall Category</span>
-                <span className="stat-badge">{nationalSummary.rain_category}</span>
+      <div className="sidebar-body">
+        {/* 1. 4 Primary KPI Summary Cards */}
+        {activeSummary && (
+          <div className="kpi-grid">
+            <div className="kpi-card">
+              <span className="kpi-label">Average Rate</span>
+              <div className="kpi-value-row">
+                <span className="kpi-value">{activeSummary.avg_precipitation.toFixed(2)}</span>
+                <span className="kpi-unit">mm/hr</span>
               </div>
             </div>
 
-            <div className="section-block">
-              <h3 className="section-title">🏆 Top Rainfall States</h3>
-              <div className="item-list">
-                {topStates.map((s) => (
-                  <button
-                    key={s.state_name}
-                    type="button"
-                    className="list-item-btn"
-                    onClick={() => onSelectState(s.state_name)}
-                  >
-                    <div className="item-main">
-                      <span className="item-name">{s.state_name}</span>
-                      <span className="item-sub">Avg {s.avg_precipitation.toFixed(1)} mm</span>
-                    </div>
-                    <div className="item-metric">
-                      <span className="metric-val">{s.max_precipitation.toFixed(1)} mm</span>
-                      <span className="metric-cat">{s.rain_category}</span>
-                    </div>
-                  </button>
-                ))}
+            <div className="kpi-card highlight">
+              <span className="kpi-label">Peak Intensity</span>
+              <div className="kpi-value-row">
+                <span className="kpi-value peak">{activeSummary.max_precipitation.toFixed(1)}</span>
+                <span className="kpi-unit">mm/hr</span>
               </div>
             </div>
-          </>
+
+            <div className="kpi-card">
+              <span className="kpi-label">Observations</span>
+              <div className="kpi-value-row">
+                <span className="kpi-value">{activeSummary.total_points.toLocaleString()}</span>
+                <span className="kpi-unit">pts</span>
+              </div>
+            </div>
+
+            <div className="kpi-card">
+              <span className="kpi-label">Rain Category</span>
+              <div className="kpi-badge-wrap">
+                <span
+                  className="kpi-category-badge"
+                  style={{
+                    backgroundColor: badgeStyle.bg,
+                    color: badgeStyle.text,
+                    borderColor: badgeStyle.border,
+                  }}
+                >
+                  {activeSummary.rain_category}
+                </span>
+              </div>
+            </div>
+          </div>
         )}
 
-        {/* LEVEL 2: STATE VIEW */}
-        {selectedState && !selectedDistrict && stateSummary && (
-          <>
-            <div className="stat-cards-grid">
-              <div className="stat-card">
-                <span className="stat-label">State Average</span>
-                <span className="stat-value">{stateSummary.avg_precipitation.toFixed(2)} mm</span>
-              </div>
-              <div className="stat-card highlight">
-                <span className="stat-label">State Peak</span>
-                <span className="stat-value">{stateSummary.max_precipitation.toFixed(1)} mm</span>
-              </div>
-              <div className="stat-card">
-                <span className="stat-label">Districts Loaded</span>
-                <span className="stat-value">{districtSummaries.length}</span>
-              </div>
-              <div className="stat-card">
-                <span className="stat-label">Weather Status</span>
-                <span className="stat-badge">{stateSummary.rain_category}</span>
-              </div>
+        {/* 2. Top Rainfall Regions List */}
+        {!selectedState && (
+          <div className="sidebar-section">
+            <div className="section-head">
+              <h3 className="section-title">Top Rainfall States</h3>
+              <span className="section-meta">Sorted by Peak</span>
             </div>
-
-            <div className="section-block">
-              <h3 className="section-title">📍 Districts in {selectedState}</h3>
-              <p className="section-subtitle">Click a district to zoom and view weather points</p>
-              <div className="item-list scrollable">
-                {districtSummaries.map((d) => (
+            <div className="region-list">
+              {topStates.map((st, idx) => {
+                const stBadge = getCategoryBadgeStyle(st.rain_category);
+                return (
                   <button
-                    key={d.district_name}
+                    key={st.state_name}
                     type="button"
-                    className="list-item-btn"
-                    onClick={() => onSelectDistrict(d.district_name)}
+                    className="region-item-row"
+                    onClick={() => onSelectState(st.state_name)}
+                    title={`Click to inspect ${st.state_name}`}
                   >
-                    <div className="item-main">
-                      <span className="item-name">{d.district_name}</span>
-                      <span className="item-sub">{d.total_points} observation points</span>
+                    <span className="rank-badge">{idx + 1}</span>
+                    <div className="region-details">
+                      <span className="region-name">{st.state_name}</span>
+                      <span className="region-sub">Avg: {st.avg_precipitation.toFixed(1)} mm</span>
                     </div>
-                    <div className="item-metric">
-                      <span className="metric-val">{d.max_precipitation.toFixed(1)} mm</span>
-                      <span className="metric-cat">{d.rain_category}</span>
+                    <div className="region-metrics">
+                      <span className="region-peak">{st.max_precipitation.toFixed(1)} mm</span>
+                      <span
+                        className="region-tag"
+                        style={{
+                          backgroundColor: stBadge.bg,
+                          color: stBadge.text,
+                          borderColor: stBadge.border,
+                        }}
+                      >
+                        {st.rain_category}
+                      </span>
                     </div>
                   </button>
-                ))}
-              </div>
+                );
+              })}
             </div>
-          </>
+          </div>
         )}
 
-        {/* LEVEL 3: DISTRICT VIEW */}
-        {selectedDistrict && districtSummary && (
-          <>
-            <div className="stat-cards-grid">
-              <div className="stat-card">
-                <span className="stat-label">District Average</span>
-                <span className="stat-value">{districtSummary.avg_precipitation.toFixed(2)} mm</span>
-              </div>
-              <div className="stat-card highlight">
-                <span className="stat-label">District Peak</span>
-                <span className="stat-value">{districtSummary.max_precipitation.toFixed(1)} mm</span>
-              </div>
-              <div className="stat-card">
-                <span className="stat-label">Active Points</span>
-                <span className="stat-value">{districtSummary.total_points}</span>
-              </div>
-              <div className="stat-card">
-                <span className="stat-label">Rain Category</span>
-                <span className="stat-badge">{districtSummary.rain_category}</span>
-              </div>
+        {/* State Districts List */}
+        {selectedState && !selectedDistrict && (
+          <div className="sidebar-section">
+            <div className="section-head">
+              <h3 className="section-title">Districts ({districtSummaries.length})</h3>
+              <span className="section-meta">Click to zoom</span>
             </div>
 
-            {anomalies && anomalies.length > 0 && (
-              <div className="section-block anomaly-box">
-                <h3 className="section-title">⚠️ Detected Weather Anomalies</h3>
-                {anomalies.map((anom, i) => (
-                  <div key={i} className="anomaly-item">
-                    <strong>{anom.type}</strong> ({anom.precipitation} mm/hr)
-                    <p>{anom.description}</p>
-                  </div>
-                ))}
+            {districtSummaries.length > 8 && (
+              <div className="search-input-wrap">
+                <input
+                  type="text"
+                  placeholder="Filter district..."
+                  value={districtSearch}
+                  onChange={(e) => setDistrictSearch(e.target.value)}
+                  className="district-search-input"
+                />
+                {districtSearch && (
+                  <button
+                    type="button"
+                    className="clear-search-btn"
+                    onClick={() => setDistrictSearch('')}
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
             )}
-          </>
+
+            <div className="region-list scrollable-districts">
+              {filteredDistricts.length === 0 ? (
+                <div className="empty-state">No matching districts</div>
+              ) : (
+                filteredDistricts.map((dist, idx) => {
+                  const distBadge = getCategoryBadgeStyle(dist.rain_category);
+                  return (
+                    <button
+                      key={dist.district_name}
+                      type="button"
+                      className="region-item-row"
+                      onClick={() => onSelectDistrict(dist.district_name)}
+                      title={`Inspect ${dist.district_name}`}
+                    >
+                      <span className="rank-badge secondary">{idx + 1}</span>
+                      <div className="region-details">
+                        <span className="region-name">{dist.district_name}</span>
+                        <span className="region-sub">{dist.total_points} grid points</span>
+                      </div>
+                      <div className="region-metrics">
+                        <span className="region-peak">{dist.max_precipitation.toFixed(1)} mm</span>
+                        <span
+                          className="region-tag"
+                          style={{
+                            backgroundColor: distBadge.bg,
+                            color: distBadge.text,
+                            borderColor: distBadge.border,
+                          }}
+                        >
+                          {dist.rain_category}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
         )}
 
-        {/* HISTORICAL TIMELINE CHART */}
+        {/* 3. Anomalies Section */}
+        {anomalies && anomalies.length > 0 && (
+          <div className="sidebar-section anomaly-section">
+            <div className="anomaly-header">
+              <span className="anomaly-icon">⚠️</span>
+              <span className="anomaly-title">Severe Weather Anomalies ({anomalies.length})</span>
+            </div>
+            <div className="anomaly-list">
+              {anomalies.map((anom, i) => (
+                <div key={i} className="anomaly-card">
+                  <div className="anomaly-card-top">
+                    <span className="anomaly-type">{anom.type}</span>
+                    <span className="anomaly-val">{anom.precipitation.toFixed(1)} mm/hr</span>
+                  </div>
+                  <p className="anomaly-desc">{anom.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 4. Time-Series Trend Mini-Chart */}
         {historicalTimeline && historicalTimeline.length > 0 && (
-          <div className="section-block">
-            <h3 className="section-title">📈 Precipitation Time-Series (IST)</h3>
-            <div className="history-chart-container">
+          <div className="sidebar-section">
+            <div className="section-head">
+              <h3 className="section-title">Precipitation Trend</h3>
+              <span className="section-meta">Last 12 granules (IST)</span>
+            </div>
+            <div className="timeline-chart">
               {historicalTimeline.map((pt) => {
-                const heightPercent = Math.min(100, Math.max(8, (pt.avg_precipitation / maxHistP) * 100));
+                const heightPct = Math.min(100, Math.max(10, (pt.avg_precipitation / maxHistP) * 100));
+                const timeLabel = pt.observation_ist.split(' ')[1] || '';
                 return (
-                  <div key={pt.observation_time} className="chart-bar-group" title={`${pt.observation_ist}: Avg ${pt.avg_precipitation.toFixed(1)} mm, Peak ${pt.max_precipitation.toFixed(1)} mm`}>
-                    <div className="bar-wrapper">
+                  <div
+                    key={pt.observation_time}
+                    className="chart-col"
+                    title={`${pt.observation_ist}\nAvg: ${pt.avg_precipitation.toFixed(2)} mm\nPeak: ${pt.max_precipitation.toFixed(1)} mm`}
+                  >
+                    <div className="col-bar-container">
                       <div
-                        className="chart-bar"
-                        style={{ height: `${heightPercent}%` }}
-                      ></div>
+                        className="col-bar"
+                        style={{ height: `${heightPct}%` }}
+                      />
                     </div>
-                    <span className="chart-bar-label">
-                      {pt.observation_ist.split(' ')[1] || ''}
-                    </span>
+                    <span className="col-label">{timeLabel}</span>
                   </div>
                 );
               })}

@@ -14,44 +14,48 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
   onSelectState,
 }) => {
   return (
-    <nav className="breadcrumbs-bar" aria-label="Geographic Breadcrumbs">
-      <div className="breadcrumb-trail">
+    <div className="floating-breadcrumbs" aria-label="Geographic Navigation Trail">
+      <div className="breadcrumb-nav">
+        {/* India Root */}
         <button
           type="button"
-          className={`breadcrumb-item ${!selectedState ? 'active' : 'clickable'}`}
+          className={`crumb-pill ${!selectedState ? 'current' : 'clickable'}`}
           onClick={onSelectIndia}
         >
-          <span className="icon">🇮🇳</span> India
+          <span className="crumb-icon">🇮🇳</span>
+          <span className="crumb-text">India</span>
         </button>
 
+        {/* State Level */}
         {selectedState && (
           <>
-            <span className="breadcrumb-separator">/</span>
+            <span className="crumb-sep">/</span>
             <button
               type="button"
-              className={`breadcrumb-item ${selectedState && !selectedDistrict ? 'active' : 'clickable'}`}
+              className={`crumb-pill ${selectedState && !selectedDistrict ? 'current' : 'clickable'}`}
               onClick={() => onSelectState(selectedState)}
             >
-              {selectedState}
+              <span className="crumb-text">{selectedState}</span>
             </button>
           </>
         )}
 
+        {/* District Level */}
         {selectedDistrict && (
           <>
-            <span className="breadcrumb-separator">/</span>
-            <span className="breadcrumb-item active">
-              {selectedDistrict}
-            </span>
+            <span className="crumb-sep">/</span>
+            <div className="crumb-pill current district-pill">
+              <span className="crumb-text">{selectedDistrict}</span>
+            </div>
           </>
         )}
       </div>
 
       <div className="breadcrumb-hint">
-        {!selectedState && "Click any state polygon on the map to inspect district rainfall"}
-        {selectedState && !selectedDistrict && `Showing districts in ${selectedState} • Click a district to view detailed observations`}
-        {selectedDistrict && `Showing observation points in ${selectedDistrict} • Click breadcrumbs to return`}
+        {!selectedState && 'Click any state on the map to explore district rainfall'}
+        {selectedState && !selectedDistrict && `Click any district in ${selectedState} to inspect observation points`}
+        {selectedDistrict && `Showing observation points in ${selectedDistrict}`}
       </div>
-    </nav>
+    </div>
   );
 };

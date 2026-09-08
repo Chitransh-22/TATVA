@@ -52,6 +52,18 @@ def _parse_iso_time(time_str: str) -> datetime:
     return datetime.fromisoformat(s)
 
 
+# In-memory LRU-like caches to make repeated queries instant (0.001s)
+_CACHE_OVERVIEW: Dict[str, Any] = {}
+_CACHE_STATE: Dict[str, Any] = {}
+_CACHE_DISTRICT: Dict[str, Any] = {}
+
+def clear_weather_cache() -> None:
+    """Clear in-memory weather caches on new data ingestion."""
+    _CACHE_OVERVIEW.clear()
+    _CACHE_STATE.clear()
+    _CACHE_DISTRICT.clear()
+
+
 # =============================================================================
 # 1. LIVE DATA FRESHNESS & METADATA
 # =============================================================================
@@ -175,6 +187,11 @@ async def get_india_overview(
                 "grid_points": [],
             }
 
+        # Check in-memory cache
+        cache_key = f"{target_dt.isoformat()}_{grid_step}"
+        if cache_key in _CACHE_OVERVIEW:
+            return _CACHE_OVERVIEW[cache_key]
+
         # 1. Fetch National Summary from weather_region_summary or on the fly
         nat_res = await db.execute(text("""
             SELECT avg_precipitation, max_precipitation, min_precipitation, total_points, rain_category, granule_id
@@ -266,7 +283,7 @@ async def get_india_overview(
             for r in grid_res.fetchall()
         ]
 
-        return {
+        result = {
             "status": "success",
             "observation_time": target_dt.isoformat(),
             "observation_ist": _to_ist_str(target_dt),
@@ -276,6 +293,8 @@ async def get_india_overview(
             "grid_points": grid_points,
             "grid_step": grid_step,
         }
+        _CACHE_OVERVIEW[cache_key] = result
+        return result
 
     except Exception as e:
         logger.error(f"Error in /weather/india/overview: {e}", exc_info=True)
@@ -334,6 +353,11 @@ async def get_state_weather(
                 "message": "No observation records available.",
             }
 
+        # Check in-memory cache
+        cache_key = f"{state.state_name}_{target_dt.isoformat()}"
+        if cache_key in _CACHE_STATE:
+            return _CACHE_STATE[cache_key]
+
         # 1. State Summary
         state_sum_res = await db.execute(text("""
             SELECT
@@ -341,15 +365,11 @@ async def get_state_weather(
                 ROUND(COALESCE(MAX(o.precipitation), 0)::numeric, 2) as max_p,
                 ROUND(COALESCE(MIN(o.precipitation), 0)::numeric, 2) as min_p,
                 COUNT(o.latitude) as pt_count
-            FROM boundary_states s
-            LEFT JOIN precipitation_observations o ON
-                o.observation_time = :obs_time
-                AND o.latitude BETWEEN s.min_lat AND s.max_lat
-                AND o.longitude BETWEEN s.min_lon AND s.max_lon
-                AND ST_Intersects(o.geom, s.geom)
-            WHERE s.state_name = :st
-            GROUP BY s.state_name;
-        """), {"obs_time": target_dt, "st": state.state_name})
+            FROM precipitation_observations o
+            WHERE o.observation_time = :obs_time
+              AND o.latitude BETWEEN :min_lat AND :max_lat
+              AND o.longitude BETWEEN :min_lon AND :max_lon;
+        """), {"obs_time": target_dt, "min_lat": state.min_lat, "max_lat": state.max_lat, "min_lon": state.min_lon, "max_lon": state.max_lon})
         st_sum = state_sum_res.first()
         max_p = float(st_sum.max_p or 0.0) if st_sum else 0.0
 
@@ -375,7 +395,6 @@ async def get_state_weather(
                 o.observation_time = :obs_time
                 AND o.latitude BETWEEN d.min_lat AND d.max_lat
                 AND o.longitude BETWEEN d.min_lon AND d.max_lon
-                AND ST_Intersects(o.geom, d.geom)
             WHERE d.state_name ILIKE :st
             GROUP BY d.id, d.district_name, d.min_lat, d.max_lat, d.min_lon, d.max_lon, d.center_lat, d.center_lon
             ORDER BY avg_p DESC, d.district_name ASC;
@@ -401,13 +420,11 @@ async def get_state_weather(
             SELECT
                 o.latitude, o.longitude, o.precipitation, o.liquid, o.ice, o.liquid_percent
             FROM precipitation_observations o
-            JOIN boundary_states s ON s.state_name = :st
             WHERE o.observation_time = :obs_time
-              AND o.latitude BETWEEN s.min_lat AND s.max_lat
-              AND o.longitude BETWEEN s.min_lon AND s.max_lon
-              AND ST_Intersects(o.geom, s.geom)
+              AND o.latitude BETWEEN :min_lat AND :max_lat
+              AND o.longitude BETWEEN :min_lon AND :max_lon
             LIMIT 4000;
-        """), {"obs_time": target_dt, "st": state.state_name})
+        """), {"obs_time": target_dt, "min_lat": state.min_lat, "max_lat": state.max_lat, "min_lon": state.min_lon, "max_lon": state.max_lon})
         observations = [
             {
                 "latitude": r.latitude,
@@ -420,7 +437,7 @@ async def get_state_weather(
             for r in obs_res.fetchall()
         ]
 
-        return {
+        result = {
             "status": "success",
             "state_name": state.state_name,
             "observation_time": target_dt.isoformat(),
@@ -431,6 +448,8 @@ async def get_state_weather(
             "district_summaries": district_summaries,
             "observations": observations,
         }
+        _CACHE_STATE[cache_key] = result
+        return result
 
     except HTTPException:
         raise

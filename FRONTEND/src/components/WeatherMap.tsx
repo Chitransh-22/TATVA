@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import L from 'leaflet';
 import type {
   IndiaOverviewResponse,
@@ -8,8 +8,7 @@ import type {
   DistrictSummary,
 } from '../types';
 import { getPrecipitationColor, Legend } from './Legend';
-
-export type BasemapType = 'carto' | 'esri' | 'osm';
+import type { BasemapOption } from './Navbar';
 
 interface WeatherMapProps {
   overviewData: IndiaOverviewResponse | null;
@@ -19,17 +18,37 @@ interface WeatherMapProps {
   selectedDistrict: string | null;
   onSelectState: (stateName: string) => void;
   onSelectDistrict: (districtName: string) => void;
+  onFitIndia: () => void;
   opacity: number;
-  basemap: BasemapType;
+  basemap: BasemapOption;
 }
 
 function slugify(text: string): string {
   return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
 }
 
+// Module-level caches to guarantee boundary GeoJSONs are fetched exactly once
+let cachedIndiaBoundaryGeoJson: any = null;
+let cachedIndiaStatesGeoJson: any = null;
+const cachedDistrictsGeoJsonMap: Record<string, any> = {};
+
+// Immediately initiate background prefetch of official India boundary
+fetch('/data/india_boundary.geojson')
+  .then((res) => res.json())
+  .then((data) => {
+    cachedIndiaBoundaryGeoJson = data;
+  })
+  .catch((e) => console.warn('Boundary preload error:', e));
+
+fetch('/data/india_states.geojson')
+  .then((res) => res.json())
+  .then((data) => {
+    cachedIndiaStatesGeoJson = data;
+  })
+  .catch((e) => console.warn('States preload error:', e));
+
 /**
- * Traces a GeoJSON geometry (FeatureCollection, Feature, MultiPolygon, Polygon)
- * into an HTML5 Canvas 2D Path using Leaflet's latLngToContainerPoint.
+ * Traces a GeoJSON geometry into an HTML5 Canvas 2D Path using Leaflet's latLngToContainerPoint.
  */
 function addGeometryToCanvasPath(ctx: CanvasRenderingContext2D, map: L.Map, geom: any): void {
   if (!geom) return;
@@ -79,16 +98,15 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
   selectedDistrict,
   onSelectState,
   onSelectDistrict,
+  onFitIndia,
   opacity,
   basemap,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
 
-  // Cached Boundary Geometries
-  const nationalBoundaryGeoJsonRef = useRef<any>(null);
-  const statesGeoJsonRef = useRef<any>(null);
-  const districtsGeoJsonMapRef = useRef<Record<string, any>>({});
+  // Direct DOM ref for Inspector Bar (Avoids React re-renders on mouse move!)
+  const inspectorRef = useRef<HTMLDivElement>(null);
 
   // Layer references
   const tileLayerRef = useRef<L.TileLayer | null>(null);
@@ -97,22 +115,58 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
   const districtsLayerRef = useRef<L.GeoJSON | null>(null);
   const pointsLayerRef = useRef<L.LayerGroup | null>(null);
   const canvasLayerRef = useRef<any>(null);
+  const canvasRendererRef = useRef<L.Canvas | null>(null);
 
-  // Track previous selection to animate camera on navigation transitions
+  // Track previous selection for camera transitions
   const prevSelectionRef = useRef<{ state: string | null; district: string | null }>({
     state: null,
     district: null,
   });
 
-  // Hover state for status bar
-  const [hoverInfo, setHoverInfo] = useState<{
-    lat: number;
-    lon: number;
-    precip: number | null;
-    locationName?: string;
-  } | null>(null);
+  // Keep latest data in ref for canvas renderer without rebuilding layers
+  const renderDataRef = useRef({
+    overviewData,
+    stateData,
+    districtData,
+    selectedState,
+    selectedDistrict,
+    opacity,
+  });
+  renderDataRef.current = {
+    overviewData,
+    stateData,
+    districtData,
+    selectedState,
+    selectedDistrict,
+    opacity,
+  };
 
-  // 1. Initialize Map & Custom Panes
+  // Helper to update inspector DOM directly (0ms, 0 React renders)
+  const updateInspector = useCallback((name: string, lat: number, lon: number, precip: number | null) => {
+    if (!inspectorRef.current) return;
+    const pStr = precip !== null ? `${precip.toFixed(1)} mm/hr` : '0.0 mm/hr';
+    inspectorRef.current.innerHTML = `
+      <div class="inspector-content">
+        <span class="inspector-location">📍 ${name}</span>
+        <span class="inspector-coords">[${lat}°N, ${lon}°E]</span>
+        <span class="inspector-val">${pStr}</span>
+      </div>
+    `;
+  }, []);
+
+  const resetInspector = useCallback(() => {
+    if (!inspectorRef.current) return;
+    inspectorRef.current.innerHTML = `
+      <div class="inspector-content">
+        <span class="inspector-location">🇮🇳 NASA IMERG 0.1° GPM Real-Time Precipitation</span>
+        <span class="inspector-hint">&bull; Hover regions to inspect metrics</span>
+      </div>
+    `;
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // 1. Initialize Map Instance (Only Once)
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
@@ -120,17 +174,12 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       center: [22.8, 82.0],
       zoom: 5,
       minZoom: 4,
-      maxZoom: 13,
-      zoomControl: true,
+      maxZoom: 14,
+      zoomControl: false,
+      attributionControl: false,
+      preferCanvas: true,
     });
 
-    // Custom Layer Panes for strict vertical rendering hierarchy:
-    // 1. tilePane (zIndex 200) -> Base map
-    // 2. weatherCanvasPane (zIndex 300) -> Clipped precipitation raster
-    // 3. boundaryPane (zIndex 400) -> State & District boundaries
-    // 4. highlightPane (zIndex 450) -> Selection & hover outlines
-    // 5. markerPane (zIndex 600) -> Observation point circle markers
-    // 6. tooltipPane (zIndex 650) -> Floating tooltips
     map.createPane('weatherCanvasPane');
     const weatherPane = map.getPane('weatherCanvasPane');
     if (weatherPane) {
@@ -144,51 +193,43 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       boundaryPane.style.zIndex = '400';
     }
 
-    map.createPane('highlightPane');
-    const highlightPane = map.getPane('highlightPane');
-    if (highlightPane) {
-      highlightPane.style.zIndex = '450';
-    }
-
+    // High-performance canvas renderer for district markers
+    canvasRendererRef.current = L.canvas({ pane: 'markerPane' });
     pointsLayerRef.current = L.layerGroup([], { pane: 'markerPane' }).addTo(map);
+
     mapRef.current = map;
 
-    // Load and cache National Boundary (Survey of India official)
-    fetch('/data/india_boundary.geojson')
-      .then((res) => res.json())
-      .then((geojson) => {
-        nationalBoundaryGeoJsonRef.current = geojson;
-
-        if (mapRef.current) {
-          nationalOutlineLayerRef.current = L.geoJSON(geojson, {
+    // Load National Boundary once and add outline
+    const loadNationalBoundary = async () => {
+      if (!cachedIndiaBoundaryGeoJson) {
+        try {
+          const res = await fetch('/data/india_boundary.geojson');
+          cachedIndiaBoundaryGeoJson = await res.json();
+        } catch (e) {
+          console.warn('Could not load national boundary:', e);
+        }
+      }
+      if (cachedIndiaBoundaryGeoJson && mapRef.current) {
+        if (!nationalOutlineLayerRef.current) {
+          nationalOutlineLayerRef.current = L.geoJSON(cachedIndiaBoundaryGeoJson, {
             pane: 'boundaryPane',
             style: {
               color: '#334155',
-              weight: 1.1,
-              opacity: 0.8,
+              weight: 1.3,
+              opacity: 0.9,
               fillColor: 'transparent',
               fillOpacity: 0,
             },
           }).addTo(mapRef.current);
-
-          // Force canvas layer redraw once boundary is loaded
-          if (canvasLayerRef.current && canvasLayerRef.current._draw) {
-            canvasLayerRef.current._draw();
-          }
         }
-      })
-      .catch((err) => console.warn('Could not load national boundary:', err));
 
-    // Load and cache States GeoJSON
-    fetch('/data/india_states.geojson')
-      .then((res) => res.json())
-      .then((geojson) => {
-        statesGeoJsonRef.current = geojson;
+        // Redraw canvas with the loaded boundary clipping path
         if (canvasLayerRef.current && canvasLayerRef.current._draw) {
           canvasLayerRef.current._draw();
         }
-      })
-      .catch((err) => console.warn('Could not load states geojson:', err));
+      }
+    };
+    loadNationalBoundary();
 
     return () => {
       map.remove();
@@ -196,7 +237,9 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     };
   }, []);
 
-  // 2. Basemap Switcher (Subtle Carto Light by default, without heavy foreign country labels)
+  // ---------------------------------------------------------------------------
+  // 2. Basemap Switcher
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -206,32 +249,35 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       tileLayerRef.current = null;
     }
 
-    if (basemap === 'carto') {
+    if (basemap === 'dark') {
       tileLayerRef.current = L.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png',
+        'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
         {
-          attribution: '&copy; OpenStreetMap contributors &copy; CARTO | NASA IMERG',
+          attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
           subdomains: 'abcd',
           maxZoom: 19,
         }
       ).addTo(map);
-    } else if (basemap === 'esri') {
-      tileLayerRef.current = L.tileLayer(
-        'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-        {
-          attribution: '&copy; Esri, DeLorme, NAVTEQ | NASA IMERG',
-          maxZoom: 16,
-        }
-      ).addTo(map);
-    } else {
+    } else if (basemap === 'osm') {
       tileLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors | NASA IMERG',
+        attribution: '&copy; OpenStreetMap contributors',
         maxZoom: 19,
       }).addTo(map);
+    } else {
+      tileLayerRef.current = L.tileLayer(
+        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        {
+          attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+          subdomains: 'abcd',
+          maxZoom: 19,
+        }
+      ).addTo(map);
     }
   }, [basemap]);
 
-  // 3. Hardware-Accelerated Canvas Precipitation Layer with Strict Boundary Clipping
+  // ---------------------------------------------------------------------------
+  // 3. Strict Boundary-Clipped Hardware Canvas Weather Layer
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -241,7 +287,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       canvasLayerRef.current = null;
     }
 
-    const CanvasGridLayer = (L.Layer as any).extend({
+    const CanvasWeatherLayer = (L.Layer as any).extend({
       onAdd: function (leafletMap: L.Map) {
         this._map = leafletMap;
         if (!this._canvas) {
@@ -284,55 +330,73 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
         ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
         ctx.save();
         ctx.scale(dpr, dpr);
-        ctx.globalAlpha = opacity;
+
+        const {
+          overviewData: curOverview,
+          stateData: curStateData,
+          districtData: curDistData,
+          selectedState: curState,
+          selectedDistrict: curDist,
+          opacity: curOpacity,
+        } = renderDataRef.current;
+
+        ctx.globalAlpha = curOpacity;
 
         // -------------------------------------------------------------
-        // RESOLVE CLIPPING MASK GEOMETRY
+        // STRICT BOUNDARY CLIPPING TO INDIA / STATE / DISTRICT
         // -------------------------------------------------------------
         let clipGeometry: any = null;
 
-        if (selectedDistrict && selectedState) {
-          const stateSlug = slugify(selectedState);
-          const districtGeoJson = districtsGeoJsonMapRef.current[stateSlug];
+        if (curDist && curState) {
+          const stateSlug = slugify(curState);
+          const districtGeoJson = cachedDistrictsGeoJsonMap[stateSlug];
           if (districtGeoJson?.features) {
             const feat = districtGeoJson.features.find((f: any) => {
               const name = f?.properties?.NAME_2 || f?.properties?.DISTRICT || '';
-              return name.toLowerCase() === selectedDistrict.toLowerCase();
+              return name.toLowerCase() === curDist.toLowerCase();
             });
             if (feat?.geometry) clipGeometry = feat.geometry;
           }
         }
 
-        if (!clipGeometry && selectedState) {
-          const statesGeoJson = statesGeoJsonRef.current;
-          if (statesGeoJson?.features) {
-            const feat = statesGeoJson.features.find((f: any) => {
+        if (!clipGeometry && curState) {
+          if (cachedIndiaStatesGeoJson?.features) {
+            const feat = cachedIndiaStatesGeoJson.features.find((f: any) => {
               const name = f?.properties?.ST_NM || '';
-              return name.toLowerCase() === selectedState.toLowerCase();
+              return name.toLowerCase() === curState.toLowerCase();
             });
             if (feat?.geometry) clipGeometry = feat.geometry;
           }
         }
 
+        // Fallback to official India national boundary
         if (!clipGeometry) {
-          clipGeometry = nationalBoundaryGeoJsonRef.current;
+          clipGeometry = cachedIndiaBoundaryGeoJson;
         }
 
-        // Apply geometric boundary clipping path
+        // Strict geometric clip path: Discards ANY raster pixels outside India
         if (clipGeometry) {
           ctx.beginPath();
           addGeometryToCanvasPath(ctx, this._map, clipGeometry);
           ctx.clip('evenodd');
+        } else {
+          // If boundary not loaded yet, wait for boundary load before rendering
+          ctx.restore();
+          return;
         }
 
         // -------------------------------------------------------------
         // RENDER WEATHER PRECIPITATION PIXELS
         // -------------------------------------------------------------
         const mapBounds = this._map.getBounds();
+        const south = mapBounds.getSouth();
+        const north = mapBounds.getNorth();
+        const west = mapBounds.getWest();
+        const east = mapBounds.getEast();
 
-        if (selectedDistrict && districtData?.observations?.length) {
-          // District View: Draw granular 0.1° observations clipped to district boundary
-          const obs = districtData.observations;
+        // 1. District View
+        if (curDist && curDistData?.observations?.length) {
+          const obs = curDistData.observations;
           const step = 0.1;
           for (let i = 0; i < obs.length; i++) {
             const pt = obs[i];
@@ -341,12 +405,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
 
             const lat = pt.latitude;
             const lon = pt.longitude;
-            if (
-              lat < mapBounds.getSouth() - step ||
-              lat > mapBounds.getNorth() + step ||
-              lon < mapBounds.getWest() - step ||
-              lon > mapBounds.getEast() + step
-            ) {
+            if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
               continue;
             }
 
@@ -358,9 +417,10 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
             ctx.fillStyle = getPrecipitationColor(p);
             ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
           }
-        } else if (selectedState && stateData?.observations?.length) {
-          // State View: Draw granular 0.1° observations clipped to state boundary
-          const obs = stateData.observations;
+        }
+        // 2. State View
+        else if (curState && curStateData?.observations?.length) {
+          const obs = curStateData.observations;
           const step = 0.1;
           for (let i = 0; i < obs.length; i++) {
             const pt = obs[i];
@@ -369,12 +429,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
 
             const lat = pt.latitude;
             const lon = pt.longitude;
-            if (
-              lat < mapBounds.getSouth() - step ||
-              lat > mapBounds.getNorth() + step ||
-              lon < mapBounds.getWest() - step ||
-              lon > mapBounds.getEast() + step
-            ) {
+            if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
               continue;
             }
 
@@ -386,22 +441,17 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
             ctx.fillStyle = getPrecipitationColor(p);
             ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
           }
-        } else if (overviewData?.grid_points?.length) {
-          // National Overview (or fallback while state loads):
-          // Draw national grid points strictly clipped to official Survey of India boundary
-          const gridPoints = overviewData.grid_points;
-          const step = overviewData.grid_step || 0.2;
+        }
+        // 3. National Overview (Strictly clipped to official Survey of India boundary)
+        else if (curOverview?.grid_points?.length) {
+          const gridPoints = curOverview.grid_points;
+          const step = curOverview.grid_step || 0.5;
 
           for (let i = 0; i < gridPoints.length; i++) {
             const [lat, lon, precip] = gridPoints[i];
             if (precip < 0.1) continue;
 
-            if (
-              lat < mapBounds.getSouth() - step ||
-              lat > mapBounds.getNorth() + step ||
-              lon < mapBounds.getWest() - step ||
-              lon > mapBounds.getEast() + step
-            ) {
+            if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
               continue;
             }
 
@@ -419,7 +469,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       },
     });
 
-    const newCanvasLayer = new CanvasGridLayer();
+    const newCanvasLayer = new CanvasWeatherLayer();
     newCanvasLayer.addTo(map);
     canvasLayerRef.current = newCanvasLayer;
 
@@ -431,7 +481,16 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     };
   }, [overviewData, stateData, districtData, selectedState, selectedDistrict, opacity]);
 
-  // 4. States GeoJSON Layer (Thin, subtle boundaries, lightweight compact tooltips)
+  // Trigger canvas redraw whenever data changes
+  useEffect(() => {
+    if (canvasLayerRef.current && canvasLayerRef.current._draw) {
+      canvasLayerRef.current._draw();
+    }
+  }, [overviewData, stateData, districtData, selectedState, selectedDistrict, opacity]);
+
+  // ---------------------------------------------------------------------------
+  // 4. States GeoJSON Layer (Subtle borders, clean hover, zero clipping leaks)
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -448,104 +507,114 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       }
     }
 
-    fetch('/data/india_states.geojson')
-      .then((res) => res.json())
-      .then((geojson) => {
-        statesGeoJsonRef.current = geojson;
-        if (!mapRef.current) return;
+    const initStates = (geojson: any) => {
+      if (!mapRef.current) return;
 
-        const layer = L.geoJSON(geojson, {
-          pane: 'boundaryPane',
-          style: (feature) => {
-            const stName = feature?.properties?.ST_NM || '';
-            const isSelected = selectedState && stName.toLowerCase() === selectedState.toLowerCase();
+      const isDarkMode = basemap === 'dark';
+      const defaultBorderColor = isDarkMode ? '#64748b' : '#475569';
 
-            return {
-              color: isSelected ? '#0284c7' : '#475569',
-              weight: isSelected ? 2.0 : 0.85,
-              opacity: isSelected ? 0.95 : 0.65,
-              fillColor: isSelected ? '#38bdf8' : 'transparent',
-              fillOpacity: isSelected ? 0.05 : 0,
-            };
-          },
-          onEachFeature: (feature, l) => {
-            const stName = feature.properties?.ST_NM || '';
-            const summary = stateSummaryMap.get(stName.toLowerCase());
+      const layer = L.geoJSON(geojson, {
+        pane: 'boundaryPane',
+        style: (feature) => {
+          const stName = feature?.properties?.ST_NM || '';
+          const isSelected = selectedState && stName.toLowerCase() === selectedState.toLowerCase();
 
-            const avgP = summary ? summary.avg_precipitation.toFixed(1) : '0.0';
-            const maxP = summary ? summary.max_precipitation.toFixed(1) : '0.0';
-            const minP = summary ? summary.min_precipitation.toFixed(1) : '0.0';
-            const rainCat = summary ? summary.rain_category : 'No Rain';
+          return {
+            color: isSelected ? '#0284c7' : defaultBorderColor,
+            weight: isSelected ? 2.2 : 0.85,
+            opacity: isSelected ? 0.95 : 0.65,
+            fillColor: isSelected ? '#38bdf8' : 'transparent',
+            fillOpacity: isSelected ? 0.08 : 0,
+          };
+        },
+        onEachFeature: (feature, l) => {
+          const stName = feature.properties?.ST_NM || '';
+          const summary = stateSummaryMap.get(stName.toLowerCase());
+          const avgP = summary ? summary.avg_precipitation.toFixed(1) : '0.0';
+          const maxP = summary ? summary.max_precipitation.toFixed(1) : '0.0';
+          const rainCat = summary ? summary.rain_category : 'Clear / Dry';
 
-            // Lightweight, compact floating card tooltip
-            l.bindTooltip(
-              `<div class="compact-weather-tooltip">
-                <div class="tooltip-header">
-                  <span class="tooltip-title">${stName}</span>
-                  <span class="tooltip-category">${rainCat}</span>
-                </div>
-                <div class="tooltip-body">
-                  <div class="tooltip-stat"><span class="tooltip-label">Avg</span><span class="tooltip-value">${avgP} mm</span></div>
-                  <div class="tooltip-stat"><span class="tooltip-label">Max</span><span class="tooltip-value highlight">${maxP} mm</span></div>
-                  <div class="tooltip-stat"><span class="tooltip-label">Min</span><span class="tooltip-value">${minP} mm</span></div>
-                </div>
-              </div>`,
-              {
-                sticky: true,
-                className: 'weather-map-tooltip',
-                direction: 'top',
-                offset: [0, -10],
+          l.bindTooltip(
+            `<div class="weather-map-tooltip">
+              <div class="tooltip-header">
+                <span class="tooltip-title">${stName}</span>
+                <span class="tooltip-category">${rainCat}</span>
+              </div>
+              <div class="tooltip-body">
+                <div class="tooltip-stat"><span class="tooltip-label">Avg</span><span class="tooltip-val">${avgP} mm/hr</span></div>
+                <div class="tooltip-stat"><span class="tooltip-label">Peak</span><span class="tooltip-val highlight">${maxP} mm/hr</span></div>
+              </div>
+            </div>`,
+            {
+              sticky: true,
+              className: 'leaflet-tooltip-clean',
+              direction: 'top',
+              offset: [0, -10],
+            }
+          );
+
+          l.on({
+            mouseover: (e) => {
+              const targetLayer = e.target;
+              if (!selectedState || selectedState.toLowerCase() !== stName.toLowerCase()) {
+                targetLayer.setStyle({
+                  color: '#0284c7',
+                  weight: 1.8,
+                  opacity: 0.95,
+                  fillOpacity: 0,
+                });
               }
-            );
-
-            l.on({
-              mouseover: (e) => {
-                const targetLayer = e.target;
-                if (!selectedState || selectedState.toLowerCase() !== stName.toLowerCase()) {
-                  targetLayer.setStyle({
-                    color: '#0284c7',
-                    weight: 1.6,
-                    opacity: 0.9,
-                    fillOpacity: 0, // Clean subtle outline, NO jarring fill
-                  });
-                }
-                setHoverInfo({
-                  lat: Number(e.latlng.lat.toFixed(2)),
-                  lon: Number(e.latlng.lng.toFixed(2)),
-                  precip: summary ? summary.avg_precipitation : null,
-                  locationName: stName,
+              updateInspector(
+                stName,
+                Number(e.latlng.lat.toFixed(2)),
+                Number(e.latlng.lng.toFixed(2)),
+                summary ? summary.avg_precipitation : null
+              );
+            },
+            mouseout: (e) => {
+              const isSelected = selectedState && stName.toLowerCase() === selectedState.toLowerCase();
+              e.target.setStyle({
+                color: isSelected ? '#0284c7' : defaultBorderColor,
+                weight: isSelected ? 2.2 : 0.85,
+                opacity: isSelected ? 0.95 : 0.65,
+                fillColor: isSelected ? '#38bdf8' : 'transparent',
+                fillOpacity: isSelected ? 0.08 : 0,
+              });
+              resetInspector();
+            },
+            click: () => {
+              onSelectState(stName);
+              if (mapRef.current) {
+                mapRef.current.fitBounds((l as any).getBounds(), {
+                  padding: [30, 30],
+                  animate: true,
+                  duration: 0.8,
                 });
-              },
-              mouseout: (e) => {
-                const isSelected = selectedState && stName.toLowerCase() === selectedState.toLowerCase();
-                e.target.setStyle({
-                  color: isSelected ? '#0284c7' : '#475569',
-                  weight: isSelected ? 2.0 : 0.85,
-                  opacity: isSelected ? 0.95 : 0.65,
-                  fillColor: isSelected ? '#38bdf8' : 'transparent',
-                  fillOpacity: isSelected ? 0.05 : 0,
-                });
-              },
-              click: () => {
-                onSelectState(stName);
-                if (mapRef.current) {
-                  mapRef.current.fitBounds((l as any).getBounds(), {
-                    padding: [30, 30],
-                    animate: true,
-                    duration: 0.8,
-                  });
-                }
-              },
-            });
-          },
-        }).addTo(mapRef.current);
+              }
+            },
+          });
+        },
+      }).addTo(mapRef.current);
 
-        statesLayerRef.current = layer;
-      })
-      .catch((err) => console.warn('Could not load states geojson:', err));
-  }, [overviewData, selectedState, onSelectState]);
+      statesLayerRef.current = layer;
+    };
 
-  // 5. Districts GeoJSON Layer (Loaded dynamically when state is selected)
+    if (cachedIndiaStatesGeoJson) {
+      initStates(cachedIndiaStatesGeoJson);
+    } else {
+      fetch('/data/india_states.geojson')
+        .then((res) => res.json())
+        .then((geojson) => {
+          cachedIndiaStatesGeoJson = geojson;
+          initStates(geojson);
+        })
+        .catch((err) => console.warn('Could not load states geojson:', err));
+    }
+  }, [overviewData, selectedState, onSelectState, basemap, updateInspector, resetInspector]);
+
+  // ---------------------------------------------------------------------------
+  // 5. Districts GeoJSON Layer (Loaded On Demand When State Selected)
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -565,191 +634,192 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       }
     }
 
-    fetch(`/data/districts/${stateSlug}.json`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`Status ${res.status}`);
-        return res.json();
-      })
-      .then((geojson) => {
-        districtsGeoJsonMapRef.current[stateSlug] = geojson;
-        if (!mapRef.current || !selectedState) return;
+    const initDistricts = (geojson: any) => {
+      if (!mapRef.current || !selectedState) return;
 
-        const layer = L.geoJSON(geojson, {
-          pane: 'boundaryPane',
-          style: (feature) => {
-            const distName = feature?.properties?.NAME_2 || feature?.properties?.DISTRICT || '';
-            const isSelected = selectedDistrict && distName.toLowerCase() === selectedDistrict.toLowerCase();
+      const isDarkMode = basemap === 'dark';
+      const defaultBorderColor = isDarkMode ? '#94a3b8' : '#64748b';
 
-            return {
-              color: isSelected ? '#0284c7' : '#64748b',
-              weight: isSelected ? 1.8 : 0.75,
-              opacity: isSelected ? 0.95 : 0.55,
-              fillColor: isSelected ? '#38bdf8' : 'transparent',
-              fillOpacity: isSelected ? 0.06 : 0,
-            };
-          },
-          onEachFeature: (feature, l) => {
-            const distName = feature.properties?.NAME_2 || feature.properties?.DISTRICT || 'District';
-            const summary = districtSummaryMap.get(distName.toLowerCase());
+      const layer = L.geoJSON(geojson, {
+        pane: 'boundaryPane',
+        style: (feature) => {
+          const distName = feature?.properties?.NAME_2 || feature?.properties?.DISTRICT || '';
+          const isSelected = selectedDistrict && distName.toLowerCase() === selectedDistrict.toLowerCase();
 
-            const avgP = summary ? summary.avg_precipitation.toFixed(1) : '0.0';
-            const maxP = summary ? summary.max_precipitation.toFixed(1) : '0.0';
-            const minP = summary ? summary.min_precipitation.toFixed(1) : '0.0';
-            const rainCat = summary ? summary.rain_category : 'No Rain';
+          return {
+            color: isSelected ? '#0284c7' : defaultBorderColor,
+            weight: isSelected ? 2.0 : 0.75,
+            opacity: isSelected ? 0.95 : 0.55,
+            fillColor: isSelected ? '#38bdf8' : 'transparent',
+            fillOpacity: isSelected ? 0.08 : 0,
+          };
+        },
+        onEachFeature: (feature, l) => {
+          const distName = feature.properties?.NAME_2 || feature.properties?.DISTRICT || 'District';
+          const summary = districtSummaryMap.get(distName.toLowerCase());
+          const avgP = summary ? summary.avg_precipitation.toFixed(1) : '0.0';
+          const maxP = summary ? summary.max_precipitation.toFixed(1) : '0.0';
+          const rainCat = summary ? summary.rain_category : 'Clear / Dry';
 
-            // Lightweight, compact floating card tooltip
-            l.bindTooltip(
-              `<div class="compact-weather-tooltip">
-                <div class="tooltip-header">
-                  <span class="tooltip-title">${distName}</span>
-                  <span class="tooltip-category">${rainCat}</span>
-                </div>
-                <div class="tooltip-body">
-                  <div class="tooltip-stat"><span class="tooltip-label">Avg</span><span class="tooltip-value">${avgP} mm</span></div>
-                  <div class="tooltip-stat"><span class="tooltip-label">Max</span><span class="tooltip-value highlight">${maxP} mm</span></div>
-                  <div class="tooltip-stat"><span class="tooltip-label">Min</span><span class="tooltip-value">${minP} mm</span></div>
-                </div>
-              </div>`,
-              {
-                sticky: true,
-                className: 'weather-map-tooltip',
-                direction: 'top',
-                offset: [0, -10],
-              }
-            );
+          l.bindTooltip(
+            `<div class="weather-map-tooltip">
+              <div class="tooltip-header">
+                <span class="tooltip-title">${distName}</span>
+                <span class="tooltip-category">${rainCat}</span>
+              </div>
+              <div class="tooltip-body">
+                <div class="tooltip-stat"><span class="tooltip-label">Avg</span><span class="tooltip-val">${avgP} mm/hr</span></div>
+                <div class="tooltip-stat"><span class="tooltip-label">Peak</span><span class="tooltip-val highlight">${maxP} mm/hr</span></div>
+              </div>
+            </div>`,
+            {
+              sticky: true,
+              className: 'leaflet-tooltip-clean',
+              direction: 'top',
+              offset: [0, -10],
+            }
+          );
 
-            l.on({
-              mouseover: (e) => {
-                const isSelected = selectedDistrict && distName.toLowerCase() === selectedDistrict.toLowerCase();
-                if (!isSelected) {
-                  e.target.setStyle({
-                    color: '#0284c7',
-                    weight: 1.5,
-                    opacity: 0.9,
-                    fillOpacity: 0,
-                  });
-                }
-                setHoverInfo({
-                  lat: Number(e.latlng.lat.toFixed(2)),
-                  lon: Number(e.latlng.lng.toFixed(2)),
-                  precip: summary ? summary.avg_precipitation : null,
-                  locationName: `${distName}, ${selectedState}`,
-                });
-              },
-              mouseout: (e) => {
-                const isSelected = selectedDistrict && distName.toLowerCase() === selectedDistrict.toLowerCase();
+          l.on({
+            mouseover: (e) => {
+              const isSelected = selectedDistrict && distName.toLowerCase() === selectedDistrict.toLowerCase();
+              if (!isSelected) {
                 e.target.setStyle({
-                  color: isSelected ? '#0284c7' : '#64748b',
-                  weight: isSelected ? 1.8 : 0.75,
-                  opacity: isSelected ? 0.95 : 0.55,
-                  fillColor: isSelected ? '#38bdf8' : 'transparent',
-                  fillOpacity: isSelected ? 0.06 : 0,
+                  color: '#0284c7',
+                  weight: 1.6,
+                  opacity: 0.95,
+                  fillOpacity: 0,
                 });
-              },
-              click: () => {
-                onSelectDistrict(distName);
-                if (mapRef.current) {
-                  mapRef.current.fitBounds((l as any).getBounds(), {
-                    padding: [30, 30],
-                    animate: true,
-                    duration: 0.8,
-                  });
-                }
-              },
-            });
-          },
-        }).addTo(mapRef.current);
+              }
+              updateInspector(
+                `${distName}, ${selectedState}`,
+                Number(e.latlng.lat.toFixed(2)),
+                Number(e.latlng.lng.toFixed(2)),
+                summary ? summary.avg_precipitation : null
+              );
+            },
+            mouseout: (e) => {
+              const isSelected = selectedDistrict && distName.toLowerCase() === selectedDistrict.toLowerCase();
+              e.target.setStyle({
+                color: isSelected ? '#0284c7' : defaultBorderColor,
+                weight: isSelected ? 2.0 : 0.75,
+                opacity: isSelected ? 0.95 : 0.55,
+                fillColor: isSelected ? '#38bdf8' : 'transparent',
+                fillOpacity: isSelected ? 0.08 : 0,
+              });
+              resetInspector();
+            },
+            click: () => {
+              onSelectDistrict(distName);
+              if (mapRef.current) {
+                mapRef.current.fitBounds((l as any).getBounds(), {
+                  padding: [30, 30],
+                  animate: true,
+                  duration: 0.8,
+                });
+              }
+            },
+          });
+        },
+      }).addTo(mapRef.current);
 
-        districtsLayerRef.current = layer;
+      districtsLayerRef.current = layer;
 
-        // Force canvas redraw to apply district clipping path if district was selected
-        if (canvasLayerRef.current && canvasLayerRef.current._draw) {
-          canvasLayerRef.current._draw();
-        }
-      })
-      .catch((err) => {
-        console.warn(`Could not load district geojson for ${selectedState}:`, err);
-      });
-  }, [selectedState, selectedDistrict, stateData, onSelectDistrict]);
+      // Force canvas redraw so district clipping path is applied
+      if (canvasLayerRef.current && canvasLayerRef.current._draw) {
+        canvasLayerRef.current._draw();
+      }
+    };
 
-  // 6. District Observation Points Layer (Observation point circle markers when district is selected)
+    if (cachedDistrictsGeoJsonMap[stateSlug]) {
+      initDistricts(cachedDistrictsGeoJsonMap[stateSlug]);
+    } else {
+      fetch(`/data/districts/${stateSlug}.json`)
+        .then((res) => {
+          if (!res.ok) throw new Error(`Status ${res.status}`);
+          return res.json();
+        })
+        .then((geojson) => {
+          cachedDistrictsGeoJsonMap[stateSlug] = geojson;
+          initDistricts(geojson);
+        })
+        .catch((err) => {
+          console.warn(`Could not load district geojson for ${selectedState}:`, err);
+        });
+    }
+  }, [selectedState, selectedDistrict, stateData, onSelectDistrict, basemap, updateInspector, resetInspector]);
+
+  // ---------------------------------------------------------------------------
+  // 6. District Observation Markers (Canvas Layer Only, Zero SVG DOM Nodes)
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const pointsGroup = pointsLayerRef.current;
-    if (!pointsGroup) return;
+    const canvasRenderer = canvasRendererRef.current;
+    if (!pointsGroup || !canvasRenderer) return;
 
     pointsGroup.clearLayers();
 
-    if (!selectedDistrict || !districtData || !districtData.observations) return;
+    if (!selectedDistrict || !districtData?.observations?.length) return;
 
     for (const pt of districtData.observations) {
       const color = getPrecipitationColor(pt.precipitation);
-      const radius = Math.min(8, Math.max(3, Math.sqrt(pt.precipitation + 1) * 1.8));
+      const radius = Math.min(6, Math.max(3, Math.sqrt(pt.precipitation + 1) * 1.4));
 
       const marker = L.circleMarker([pt.latitude, pt.longitude], {
+        renderer: canvasRenderer,
         pane: 'markerPane',
         radius: radius,
         fillColor: color,
         color: '#0f172a',
-        weight: 0.75,
+        weight: 0.8,
         opacity: 0.85,
-        fillOpacity: 0.9,
+        fillOpacity: 0.92,
       });
 
       marker.bindTooltip(
-        `<div class="compact-weather-tooltip">
+        `<div class="weather-map-tooltip">
           <div class="tooltip-header">
             <span class="tooltip-title">${pt.latitude.toFixed(2)}° N, ${pt.longitude.toFixed(2)}° E</span>
           </div>
           <div class="tooltip-body">
-            <div class="tooltip-stat"><span class="tooltip-label">Rain</span><span class="tooltip-value highlight">${pt.precipitation.toFixed(1)} mm</span></div>
-            <div class="tooltip-stat"><span class="tooltip-label">Liquid</span><span class="tooltip-value">${pt.liquid.toFixed(1)} mm</span></div>
-            <div class="tooltip-stat"><span class="tooltip-label">Ice</span><span class="tooltip-value">${pt.ice.toFixed(1)} mm</span></div>
+            <div class="tooltip-stat"><span class="tooltip-label">Rain</span><span class="tooltip-val highlight">${pt.precipitation.toFixed(1)} mm/hr</span></div>
+            <div class="tooltip-stat"><span class="tooltip-label">Liquid</span><span class="tooltip-val">${pt.liquid.toFixed(1)} mm</span></div>
+            <div class="tooltip-stat"><span class="tooltip-label">Ice</span><span class="tooltip-val">${pt.ice.toFixed(1)} mm</span></div>
           </div>
         </div>`,
         {
           sticky: true,
-          className: 'weather-map-tooltip',
+          className: 'leaflet-tooltip-clean',
           direction: 'top',
-          offset: [0, -8],
+          offset: [0, -6],
         }
       );
 
-      marker.bindPopup(`
-        <div style="font-family:sans-serif;font-size:12px;line-height:1.5;">
-          <strong>Observation Point</strong><br/>
-          <span>${pt.latitude.toFixed(2)}° N, ${pt.longitude.toFixed(2)}° E</span><hr style="margin:4px 0;border:0;border-top:1px solid #cbd5e1;"/>
-          <span style="color:#0284c7;font-weight:700;">Rainfall: ${pt.precipitation.toFixed(1)} mm</span><br/>
-          <span>Liquid: ${pt.liquid.toFixed(1)} mm | Ice: ${pt.ice.toFixed(1)} mm</span><br/>
-          <span>Liquid %: ${pt.liquid_percent.toFixed(0)}%</span>
-        </div>
-      `);
-
       marker.on('mouseover', () => {
-        setHoverInfo({
-          lat: pt.latitude,
-          lon: pt.longitude,
-          precip: pt.precipitation,
-          locationName: `${selectedDistrict} Point`,
-        });
+        updateInspector(
+          `${selectedDistrict} Point`,
+          pt.latitude,
+          pt.longitude,
+          pt.precipitation
+        );
       });
 
       pointsGroup.addLayer(marker);
     }
-  }, [selectedDistrict, districtData]);
+  }, [selectedDistrict, districtData, updateInspector]);
 
-  // 7. Navigation Camera Transitions (Smooth drilldown & return via Breadcrumbs or Fit India)
+  // ---------------------------------------------------------------------------
+  // 7. Navigation Camera Transitions
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     const prev = prevSelectionRef.current;
 
-    // Resetting to India Overview (from state)
     if (prev.state && !selectedState) {
       map.setView([22.8, 82.0], 5, { animate: true, duration: 0.8 });
-    }
-    // Returning from District to State
-    else if (prev.district && !selectedDistrict && selectedState && statesLayerRef.current) {
+    } else if (prev.district && !selectedDistrict && selectedState && statesLayerRef.current) {
       statesLayerRef.current.eachLayer((layer: any) => {
         const name = layer.feature?.properties?.ST_NM;
         if (name && name.toLowerCase() === selectedState.toLowerCase()) {
@@ -761,27 +831,75 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     prevSelectionRef.current = { state: selectedState, district: selectedDistrict };
   }, [selectedState, selectedDistrict]);
 
+  // ---------------------------------------------------------------------------
+  // 8. Custom Vertical Map Control Actions
+  // ---------------------------------------------------------------------------
+  const handleZoomIn = useCallback(() => {
+    if (mapRef.current) mapRef.current.zoomIn();
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    if (mapRef.current) mapRef.current.zoomOut();
+  }, []);
+
+  const handleFitIndia = useCallback(() => {
+    onFitIndia();
+    if (mapRef.current) {
+      mapRef.current.setView([22.8, 82.0], 5, { animate: true, duration: 0.8 });
+    }
+  }, [onFitIndia]);
+
   return (
     <div className="map-wrapper">
       <div ref={mapContainerRef} className="leaflet-map-canvas" />
 
-      {/* Legend */}
+      {/* Modern Vertical Map Controls */}
+      <div className="map-vertical-controls" role="group" aria-label="Map Navigation Controls">
+        <button
+          type="button"
+          className="map-control-btn"
+          onClick={handleZoomIn}
+          title="Zoom In"
+          aria-label="Zoom In"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" className="control-svg">
+            <path fillRule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clipRule="evenodd" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="map-control-btn"
+          onClick={handleZoomOut}
+          title="Zoom Out"
+          aria-label="Zoom Out"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" className="control-svg">
+            <path fillRule="evenodd" d="M5 10a1 1 0 011-1h8a1 1 0 110 2H6a1 1 0 01-1-1z" clipRule="evenodd" />
+          </svg>
+        </button>
+        <div className="control-btn-divider" />
+        <button
+          type="button"
+          className="map-control-btn"
+          onClick={handleFitIndia}
+          title="Fit India Extent"
+          aria-label="Fit India"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" className="control-svg">
+            <path fillRule="evenodd" d="M3 4a1 1 0 011-1h3a1 1 0 010 2H5v2a1 1 0 01-2 0V4zm14 0a1 1 0 00-1-1h-3a1 1 0 100 2h2v2a1 1 0 102 0V4zM3 16a1 1 0 001 1h3a1 1 0 100-2H5v-2a1 1 0 10-2 0v3zm14 0a1 1 0 01-1 1h-3a1 1 0 110-2h2v-2a1 1 0 112 0v3z" clipRule="evenodd" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Floating Legend */}
       <Legend />
 
-      {/* Compact Status / Inspector Bar */}
-      <div className="map-status-bar">
-        {hoverInfo ? (
-          <span>
-            📍 <strong>{hoverInfo.locationName || 'India'}</strong> [{hoverInfo.lat}° N, {hoverInfo.lon}° E] &bull;{' '}
-            <span style={{ color: '#0284c7', fontWeight: 700 }}>
-              {hoverInfo.precip !== null ? `${hoverInfo.precip.toFixed(1)} mm` : '0.0 mm'}
-            </span>
-          </span>
-        ) : (
-          <span>
-            🇮🇳 <strong>NASA IMERG Weather Analytics</strong> &bull; Hover over states or districts to inspect
-          </span>
-        )}
+      {/* Bottom Status / Cursor Inspector Pill (Direct DOM updated) */}
+      <div ref={inspectorRef} className="map-inspector-pill">
+        <div className="inspector-content">
+          <span className="inspector-location">🇮🇳 NASA IMERG 0.1° GPM Real-Time Precipitation</span>
+          <span className="inspector-hint">&bull; Hover regions to inspect metrics</span>
+        </div>
       </div>
     </div>
   );
