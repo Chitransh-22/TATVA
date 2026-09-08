@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "aiven": {
+      "httpUrl": "https://mcp.aiven.live/mcp?read_only=true"
+    }
+  }
+}

@@ -6,6 +6,7 @@ from sqlalchemy import select, update, func
 from app.database.connection import AsyncSessionLocal
 from app.database.models import IngestionLedger
 from app.ingestion.topics import (
+    TOPIC_GRANULES_STATUS,
     TOPIC_GRANULES_NEW,
     TOPIC_GRANULES_SKIPPED,
     GranuleDiscoveredMessage,

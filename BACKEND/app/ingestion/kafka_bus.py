@@ -1,14 +1,16 @@
 import asyncio
 import json
 import logging
+import ssl
+from pathlib import Path
 from typing import Callable, Dict, List, Any, Optional
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
-from app.config import settings
+from app.config import settings, BACKEND_DIR
 from app.ingestion.topics import (
     ALL_TOPICS,
     TOPIC_GRANULES_DISCOVERED,
     TOPIC_GRANULES_RAW,
-    TOPIC_GRANULES_NEW,
+    TOPIC_GRANULES_STATUS,
     TOPIC_GRANULES_TRANSFORMED,
     TOPIC_GRANULES_DLQ,
 )
@@ -34,17 +36,47 @@ class KafkaBus:
         self._memory_dispatch_task: Optional[asyncio.Task] = None
         self._running = False
 
+    def _build_connection_kwargs(self) -> Dict[str, Any]:
+        """Construct authentication and SSL kwargs based on settings."""
+        kwargs: Dict[str, Any] = {
+            "bootstrap_servers": self.bootstrap_servers,
+            "request_timeout_ms": 15000,
+        }
+        sec_proto = (settings.KAFKA_SECURITY_PROTOCOL or "PLAINTEXT").upper()
+        if sec_proto in ("SSL", "SASL_SSL"):
+            kwargs["security_protocol"] = sec_proto
+            ssl_ctx = ssl.create_default_context()
+            if settings.KAFKA_SSL_CA_LOCATION:
+                ca_path = Path(settings.KAFKA_SSL_CA_LOCATION)
+                if not ca_path.is_absolute():
+                    ca_path = BACKEND_DIR / ca_path
+                if ca_path.exists():
+                    ssl_ctx.load_verify_locations(cafile=str(ca_path))
+                else:
+                    logger.warning(f"CA certificate file not found at {ca_path}")
+            kwargs["ssl_context"] = ssl_ctx
+
+        if sec_proto.startswith("SASL"):
+            if settings.KAFKA_SASL_MECHANISM:
+                kwargs["sasl_mechanism"] = settings.KAFKA_SASL_MECHANISM
+            if settings.KAFKA_SASL_USERNAME:
+                kwargs["sasl_plain_username"] = settings.KAFKA_SASL_USERNAME
+            if settings.KAFKA_SASL_PASSWORD:
+                kwargs["sasl_plain_password"] = settings.KAFKA_SASL_PASSWORD
+
+        return kwargs
+
     async def start(self) -> None:
         """Initialize connection to Kafka or activate in-memory mode."""
         self._running = True
         if settings.KAFKA_ENABLED:
             try:
-                logger.info(f"Connecting to Kafka cluster at {self.bootstrap_servers}...")
+                conn_kwargs = self._build_connection_kwargs()
+                logger.info(f"Connecting to Kafka cluster at {self.bootstrap_servers} (protocol: {settings.KAFKA_SECURITY_PROTOCOL})...")
                 self.producer = AIOKafkaProducer(
-                    bootstrap_servers=self.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v, default=str).encode("utf-8"),
                     key_serializer=lambda k: k.encode("utf-8") if k else None,
-                    request_timeout_ms=5000,
+                    **conn_kwargs,
                 )
                 await self.producer.start()
 
@@ -52,18 +84,18 @@ class KafkaBus:
                 consumer_topics = [
                     TOPIC_GRANULES_DISCOVERED,
                     TOPIC_GRANULES_RAW,
-                    TOPIC_GRANULES_NEW,
+                    TOPIC_GRANULES_STATUS,
                     TOPIC_GRANULES_TRANSFORMED,
                 ]
                 self.consumer = AIOKafkaConsumer(
                     *consumer_topics,
-                    bootstrap_servers=self.bootstrap_servers,
                     group_id=settings.KAFKA_GROUP_ID,
                     client_id=f"{settings.KAFKA_CLIENT_ID}-consumer",
                     enable_auto_commit=False,
                     auto_offset_reset="earliest",
                     value_deserializer=lambda m: json.loads(m.decode("utf-8")),
                     key_deserializer=lambda k: k.decode("utf-8") if k else None,
+                    **conn_kwargs,
                 )
                 await self.consumer.start()
 
@@ -71,8 +103,11 @@ class KafkaBus:
                 self._consumer_task = asyncio.create_task(self._consume_loop())
                 logger.info("Kafka Producer and Consumer successfully connected and started.")
             except Exception as e:
+                safe_err = str(e)
+                if settings.KAFKA_SASL_PASSWORD:
+                    safe_err = safe_err.replace(settings.KAFKA_SASL_PASSWORD, "******")
                 logger.warning(
-                    f"Could not connect to Kafka cluster ({e}). "
+                    f"Could not connect to Kafka cluster ({safe_err}). "
                     "Operating in asynchronous in-memory event bus mode."
                 )
                 self.is_connected = False

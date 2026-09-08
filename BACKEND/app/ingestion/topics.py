@@ -4,19 +4,21 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 
-# Kafka Topic Names
+# Kafka Topic Names (5-Topic Target Architecture)
 TOPIC_GRANULES_DISCOVERED = "ritu.granules.discovered"
 TOPIC_GRANULES_RAW = "ritu.granules.raw"
-TOPIC_GRANULES_NEW = "ritu.granules.new"
-TOPIC_GRANULES_SKIPPED = "ritu.granules.skipped"
+TOPIC_GRANULES_STATUS = "ritu.granules.status"
 TOPIC_GRANULES_TRANSFORMED = "ritu.granules.transformed"
 TOPIC_GRANULES_DLQ = "ritu.granules.dlq"
+
+# Backward-compatibility aliases (consolidated into ritu.granules.status)
+TOPIC_GRANULES_NEW = TOPIC_GRANULES_STATUS
+TOPIC_GRANULES_SKIPPED = TOPIC_GRANULES_STATUS
 
 ALL_TOPICS = [
     TOPIC_GRANULES_DISCOVERED,
     TOPIC_GRANULES_RAW,
-    TOPIC_GRANULES_NEW,
-    TOPIC_GRANULES_SKIPPED,
+    TOPIC_GRANULES_STATUS,
     TOPIC_GRANULES_TRANSFORMED,
     TOPIC_GRANULES_DLQ,
 ]

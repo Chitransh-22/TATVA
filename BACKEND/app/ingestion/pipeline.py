@@ -7,6 +7,7 @@ from app.config import settings
 from app.ingestion.topics import (
     TOPIC_GRANULES_DISCOVERED,
     TOPIC_GRANULES_RAW,
+    TOPIC_GRANULES_STATUS,
     TOPIC_GRANULES_NEW,
     TOPIC_GRANULES_SKIPPED,
     TOPIC_GRANULES_TRANSFORMED,
@@ -38,7 +39,7 @@ class WeatherIngestionPipeline:
 
         kafka_bus.register_handler(TOPIC_GRANULES_DISCOVERED, self.on_granule_discovered)
         kafka_bus.register_handler(TOPIC_GRANULES_RAW, self.on_granule_raw)
-        kafka_bus.register_handler(TOPIC_GRANULES_NEW, self.on_granule_new)
+        kafka_bus.register_handler(TOPIC_GRANULES_STATUS, self.on_granule_status)
         kafka_bus.register_handler(TOPIC_GRANULES_TRANSFORMED, self.on_granule_transformed)
         self._initialized = True
         logger.info("Kafka ingestion pipeline event subscribers registered.")
@@ -76,6 +77,19 @@ class WeatherIngestionPipeline:
             raw_file_path=raw_file_path,
             checksum=checksum or "",
         )
+
+    async def on_granule_status(self, event: Dict[str, Any]) -> None:
+        """Handler for combined ritu.granules.status events."""
+        action = str(event.get("action", "")).upper()
+        granule_id = event.get("granule_id", "UNKNOWN")
+        if action == "NEW":
+            logger.info(f"[Pipeline] Received status 'NEW' for granule {granule_id}. Proceeding to extraction.")
+            await self.on_granule_new(event)
+        elif action == "SKIPPED":
+            reason = event.get("reason", "Duplicate or already completed")
+            logger.info(f"[Pipeline] Received status 'SKIPPED' for granule {granule_id}: {reason}")
+        else:
+            logger.warning(f"[Pipeline] Received unrecognized status action '{action}' for granule {granule_id}")
 
     async def on_granule_new(self, event: Dict[str, Any]) -> None:
         """Handler for verified new granules -> Extractor and Converter."""

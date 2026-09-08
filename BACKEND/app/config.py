@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     KAFKA_ENABLED: bool = True
     KAFKA_CLIENT_ID: str = "ritu-weather-ingestor"
     KAFKA_GROUP_ID: str = "ritu-pipeline-group"
+    KAFKA_SECURITY_PROTOCOL: str = "PLAINTEXT"
+    KAFKA_SASL_MECHANISM: Optional[str] = None
+    KAFKA_SASL_USERNAME: Optional[str] = None
+    KAFKA_SASL_PASSWORD: Optional[str] = None
+    KAFKA_SSL_CA_LOCATION: Optional[str] = None
     
     # Database Configuration (PostgreSQL + PostGIS)
     POSTGRES_HOST: str = "localhost"

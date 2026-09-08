@@ -40,7 +40,7 @@ def test_health_kafka_endpoint(test_client: TestClient):
     assert "status" in data
     assert "mode" in data
     assert "registered_topics" in data
-    assert len(data["registered_topics"]) >= 6
+    assert len(data["registered_topics"]) >= 5
 
 
 def test_ingestion_status_endpoint(test_client: TestClient):

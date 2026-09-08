@@ -105,8 +105,9 @@ async def health_check():
     elif not kafka_ok:
         try:
             import socket
-            host, port_s = settings.KAFKA_BOOTSTRAP_SERVERS.split(",")[0].split(":")
-            s = socket.create_connection((host, int(port_s)), timeout=1.0)
+            server_entry = settings.KAFKA_BOOTSTRAP_SERVERS.split(",")[0].strip().strip("\"'")
+            host, port_s = server_entry.split(":")
+            s = socket.create_connection((host, int(port_s)), timeout=2.0)
             s.close()
             kafka_ok = True
         except Exception:
@@ -182,8 +183,9 @@ async def health_kafka():
     broker_reachable = False
     try:
         import socket
-        host, port_s = settings.KAFKA_BOOTSTRAP_SERVERS.split(",")[0].split(":")
-        s = socket.create_connection((host, int(port_s)), timeout=1.0)
+        server_entry = settings.KAFKA_BOOTSTRAP_SERVERS.split(",")[0].strip().strip("\"'")
+        host, port_s = server_entry.split(":")
+        s = socket.create_connection((host, int(port_s)), timeout=2.0)
         s.close()
         broker_reachable = True
     except Exception:
