@@ -142,6 +142,24 @@ CREATE TABLE IF NOT EXISTS boundary_districts (
 CREATE INDEX IF NOT EXISTS idx_boundary_districts_geom ON boundary_districts USING GIST (geom);
 CREATE INDEX IF NOT EXISTS idx_boundary_districts_state ON boundary_districts (state_name);
 CREATE INDEX IF NOT EXISTS idx_boundary_districts_name ON boundary_districts (district_name);
+
+-- 7. Weather Region Summary (National & State rollups for instant API responses)
+CREATE TABLE IF NOT EXISTS weather_region_summary (
+    id BIGSERIAL PRIMARY KEY,
+    observation_time TIMESTAMPTZ NOT NULL,
+    granule_id VARCHAR(128) NOT NULL,
+    region_type VARCHAR(32) NOT NULL,
+    region_name VARCHAR(128) NOT NULL,
+    state_name VARCHAR(128) NOT NULL,
+    avg_precipitation DOUBLE PRECISION,
+    max_precipitation DOUBLE PRECISION,
+    min_precipitation DOUBLE PRECISION,
+    total_points BIGINT DEFAULT 0,
+    rain_category VARCHAR(64),
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_region_summary UNIQUE (observation_time, region_type, region_name, state_name)
+);
+CREATE INDEX IF NOT EXISTS idx_region_summary_lookup ON weather_region_summary (observation_time, region_type, state_name);
 """
 
 
@@ -173,43 +191,101 @@ async def ensure_monthly_partition(conn: asyncpg.Connection, dt: datetime) -> st
     return partition_name
 
 
+async def seed_boundaries_if_empty(conn: asyncpg.Connection) -> None:
+    """Seed boundary_states and boundary_districts from GeoJSON assets if tables are empty."""
+    import json
+    from pathlib import Path
+
+    boundaries_dir = Path(__file__).resolve().parent.parent.parent / "data" / "boundaries"
+    states_path = boundaries_dir / "india_states.geojson"
+    districts_path = boundaries_dir / "india_districts.geojson"
+
+    try:
+        states_count = await conn.fetchval("SELECT count(*) FROM boundary_states;")
+        if states_count == 0 and states_path.exists():
+            logger.info("Seeding boundary_states from india_states.geojson...")
+            with open(states_path, "r", encoding="utf-8") as f:
+                states_data = json.load(f)
+            state_insert_sql = """
+                INSERT INTO boundary_states (state_name, geom, min_lat, max_lat, min_lon, max_lon, center_lat, center_lon)
+                SELECT
+                    $1,
+                    g,
+                    ST_YMin(g),
+                    ST_YMax(g),
+                    ST_XMin(g),
+                    ST_XMax(g),
+                    ST_Y(ST_Centroid(g)),
+                    ST_X(ST_Centroid(g))
+                FROM (SELECT ST_SetSRID(ST_GeomFromGeoJSON($2), 4326) AS g) sub
+                ON CONFLICT (state_name) DO NOTHING;
+            """
+            for feat in states_data.get("features", []):
+                st_name = feat.get("properties", {}).get("ST_NM")
+                if st_name and feat.get("geometry"):
+                    geom_str = json.dumps(feat["geometry"])
+                    await conn.execute(state_insert_sql, st_name, geom_str)
+            logger.info(f"Seeded boundary_states (total: {len(states_data.get('features', []))}).")
+
+        districts_count = await conn.fetchval("SELECT count(*) FROM boundary_districts;")
+        if districts_count == 0 and districts_path.exists():
+            logger.info("Seeding boundary_districts from india_districts.geojson...")
+            with open(districts_path, "r", encoding="utf-8") as f:
+                dist_data = json.load(f)
+            dist_insert_sql = """
+                INSERT INTO boundary_districts (state_name, district_name, geom, min_lat, max_lat, min_lon, max_lon, center_lat, center_lon)
+                SELECT
+                    $1,
+                    $2,
+                    g,
+                    ST_YMin(g),
+                    ST_YMax(g),
+                    ST_XMin(g),
+                    ST_XMax(g),
+                    ST_Y(ST_Centroid(g)),
+                    ST_X(ST_Centroid(g))
+                FROM (SELECT ST_SetSRID(ST_GeomFromGeoJSON($3), 4326) AS g) sub;
+            """
+            for feat in dist_data.get("features", []):
+                st_name = feat.get("properties", {}).get("NAME_1", "")
+                dist_name = feat.get("properties", {}).get("NAME_2", "")
+                if dist_name and feat.get("geometry"):
+                    geom_str = json.dumps(feat["geometry"])
+                    await conn.execute(dist_insert_sql, st_name, dist_name, geom_str)
+            logger.info(f"Seeded boundary_districts (total: {len(dist_data.get('features', []))}).")
+    except Exception as e:
+        logger.warning(f"Boundary seeding encountered non-fatal error: {e}")
+
+
 async def run_migrations() -> bool:
     """Run all core database DDL statements and verify PostGIS."""
     # Step 1: Ensure database exists
     conn = None
+    conn_kwargs = {
+        "host": settings.POSTGRES_HOST,
+        "port": settings.POSTGRES_PORT,
+        "user": settings.POSTGRES_USER,
+        "password": settings.POSTGRES_PASSWORD,
+        "database": settings.POSTGRES_DB,
+        "timeout": 5.0,
+    }
+    if settings.POSTGRES_SSL:
+        conn_kwargs["ssl"] = settings.POSTGRES_SSL
+
     try:
-        conn = await asyncpg.connect(
-            host=settings.POSTGRES_HOST,
-            port=settings.POSTGRES_PORT,
-            user=settings.POSTGRES_USER,
-            password=settings.POSTGRES_PASSWORD,
-            database=settings.POSTGRES_DB,
-            timeout=3.0,
-        )
+        conn = await asyncpg.connect(**conn_kwargs)
     except asyncpg.InvalidCatalogNameError:
         # Target database does not exist, connect to postgres and create it
         logger.info(f"Database '{settings.POSTGRES_DB}' does not exist. Creating it...")
         try:
-            admin_conn = await asyncpg.connect(
-                host=settings.POSTGRES_HOST,
-                port=settings.POSTGRES_PORT,
-                user=settings.POSTGRES_USER,
-                password=settings.POSTGRES_PASSWORD,
-                database="postgres",
-                timeout=3.0,
-            )
+            admin_kwargs = dict(conn_kwargs)
+            admin_kwargs["database"] = "postgres"
+            admin_conn = await asyncpg.connect(**admin_kwargs)
             await admin_conn.execute(f'CREATE DATABASE "{settings.POSTGRES_DB}";')
             await admin_conn.close()
             logger.info(f"Database '{settings.POSTGRES_DB}' created successfully.")
             # Reconnect to the newly created database
-            conn = await asyncpg.connect(
-                host=settings.POSTGRES_HOST,
-                port=settings.POSTGRES_PORT,
-                user=settings.POSTGRES_USER,
-                password=settings.POSTGRES_PASSWORD,
-                database=settings.POSTGRES_DB,
-                timeout=3.0,
-            )
+            conn = await asyncpg.connect(**conn_kwargs)
         except Exception as create_err:
             logger.error(f"Failed to create database '{settings.POSTGRES_DB}': {create_err}")
             return False
@@ -232,6 +308,10 @@ async def run_migrations() -> bool:
         # Ensure current and upcoming month partitions exist
         now = datetime.utcnow()
         await ensure_monthly_partition(conn, now)
+
+        # Seed static boundaries (states and districts) if empty
+        await seed_boundaries_if_empty(conn)
+
         logger.info("Database migrations completed successfully.")
         return True
     except Exception as ddl_err:

@@ -38,21 +38,27 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "postgres"
     POSTGRES_DB: str = "ritu_db"
+    POSTGRES_SSL: Optional[str] = None
     DATABASE_URL: Optional[str] = None
     DATABASE_URL_SYNC: Optional[str] = None
 
     @model_validator(mode="after")
     def assemble_db_urls(self) -> "Settings":
         """Construct database connection URLs from discrete parameters if not provided."""
-        if not self.DATABASE_URL:
+        from urllib.parse import quote_plus
+        escaped_pwd = quote_plus(self.POSTGRES_PASSWORD) if self.POSTGRES_PASSWORD else ""
+        ssl_suffix = f"?ssl={self.POSTGRES_SSL}" if self.POSTGRES_SSL else ""
+        ssl_sync_suffix = f"?sslmode={self.POSTGRES_SSL}" if self.POSTGRES_SSL else ""
+
+        if not self.DATABASE_URL or "<YOUR_AZURE_PASSWORD>" in self.DATABASE_URL:
             self.DATABASE_URL = (
-                f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@"
-                f"{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+                f"postgresql+asyncpg://{self.POSTGRES_USER}:{escaped_pwd}@"
+                f"{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}{ssl_suffix}"
             )
-        if not self.DATABASE_URL_SYNC:
+        if not self.DATABASE_URL_SYNC or "<YOUR_AZURE_PASSWORD>" in self.DATABASE_URL_SYNC:
             self.DATABASE_URL_SYNC = (
-                f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@"
-                f"{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+                f"postgresql://{self.POSTGRES_USER}:{escaped_pwd}@"
+                f"{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}{ssl_sync_suffix}"
             )
         return self
 

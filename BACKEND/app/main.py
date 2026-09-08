@@ -86,14 +86,17 @@ async def root():
 async def health_check():
     db_ok = False
     try:
-        conn = await asyncpg.connect(
-            host=settings.POSTGRES_HOST,
-            port=settings.POSTGRES_PORT,
-            user=settings.POSTGRES_USER,
-            password=settings.POSTGRES_PASSWORD,
-            database=settings.POSTGRES_DB,
-            timeout=1.5,
-        )
+        conn_kwargs = {
+            "host": settings.POSTGRES_HOST,
+            "port": settings.POSTGRES_PORT,
+            "user": settings.POSTGRES_USER,
+            "password": settings.POSTGRES_PASSWORD,
+            "database": settings.POSTGRES_DB,
+            "timeout": 5.0,
+        }
+        if settings.POSTGRES_SSL:
+            conn_kwargs["ssl"] = settings.POSTGRES_SSL
+        conn = await asyncpg.connect(**conn_kwargs)
         await conn.close()
         db_ok = True
     except Exception:
@@ -131,15 +134,24 @@ async def health_check():
 async def health_db():
     """Verify PostgreSQL connectivity and PostGIS extension status."""
     try:
-        conn = await asyncpg.connect(
-            host=settings.POSTGRES_HOST,
-            port=settings.POSTGRES_PORT,
-            user=settings.POSTGRES_USER,
-            password=settings.POSTGRES_PASSWORD,
-            database=settings.POSTGRES_DB,
-            timeout=2.0,
-        )
-        postgis_ver = await conn.fetchval("SELECT PostGIS_Version();")
+        conn_kwargs = {
+            "host": settings.POSTGRES_HOST,
+            "port": settings.POSTGRES_PORT,
+            "user": settings.POSTGRES_USER,
+            "password": settings.POSTGRES_PASSWORD,
+            "database": settings.POSTGRES_DB,
+            "timeout": 5.0,
+        }
+        if settings.POSTGRES_SSL:
+            conn_kwargs["ssl"] = settings.POSTGRES_SSL
+        conn = await asyncpg.connect(**conn_kwargs)
+        postgis_ver = None
+        postgis_ok = False
+        try:
+            postgis_ver = await conn.fetchval("SELECT PostGIS_Version();")
+            postgis_ok = True
+        except Exception:
+            postgis_ok = False
         pg_ver = await conn.fetchval("SHOW server_version;")
         await conn.close()
         return {
@@ -150,7 +162,7 @@ async def health_db():
             "port": settings.POSTGRES_PORT,
             "postgresql_version": pg_ver,
             "postgis_version": postgis_ver,
-            "postgis_enabled": True,
+            "postgis_enabled": postgis_ok,
         }
     except Exception as e:
         safe_error = str(e)

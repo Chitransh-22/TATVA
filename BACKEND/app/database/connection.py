@@ -45,11 +45,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def get_asyncpg_connection() -> asyncpg.Connection:
     """Create a raw asyncpg connection for high-throughput COPY operations."""
-    return await asyncpg.connect(
-        host=settings.POSTGRES_HOST,
-        port=settings.POSTGRES_PORT,
-        user=settings.POSTGRES_USER,
-        password=settings.POSTGRES_PASSWORD,
-        database=settings.POSTGRES_DB,
-        timeout=3.0,
-    )
+    conn_kwargs = {
+        "host": settings.POSTGRES_HOST,
+        "port": settings.POSTGRES_PORT,
+        "user": settings.POSTGRES_USER,
+        "password": settings.POSTGRES_PASSWORD,
+        "database": settings.POSTGRES_DB,
+        "timeout": 5.0,
+    }
+    if settings.POSTGRES_SSL:
+        conn_kwargs["ssl"] = settings.POSTGRES_SSL
+    return await asyncpg.connect(**conn_kwargs)

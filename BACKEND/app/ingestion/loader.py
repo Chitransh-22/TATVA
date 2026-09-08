@@ -35,14 +35,17 @@ class BulkObservationLoader:
 
         conn = None
         try:
-            conn = await asyncpg.connect(
-                host=settings.POSTGRES_HOST,
-                port=settings.POSTGRES_PORT,
-                user=settings.POSTGRES_USER,
-                password=settings.POSTGRES_PASSWORD,
-                database=settings.POSTGRES_DB,
-                timeout=5.0,
-            )
+            conn_kwargs = {
+                "host": settings.POSTGRES_HOST,
+                "port": settings.POSTGRES_PORT,
+                "user": settings.POSTGRES_USER,
+                "password": settings.POSTGRES_PASSWORD,
+                "database": settings.POSTGRES_DB,
+                "timeout": 10.0,
+            }
+            if settings.POSTGRES_SSL:
+                conn_kwargs["ssl"] = settings.POSTGRES_SSL
+            conn = await asyncpg.connect(**conn_kwargs)
         except Exception as e:
             err_msg = f"PostgreSQL connection failed during bulk COPY: {e}"
             logger.error(err_msg)
