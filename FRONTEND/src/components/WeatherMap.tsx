@@ -8,7 +8,8 @@ import type {
   DistrictSummary,
 } from '../types';
 import { getPrecipitationColor, Legend } from './Legend';
-import type { BasemapOption } from './Navbar';
+import type { BasemapOption } from '../types';
+import { weatherStore } from '../data/weatherStore';
 
 interface WeatherMapProps {
   overviewData: IndiaOverviewResponse | null;
@@ -20,7 +21,7 @@ interface WeatherMapProps {
   onSelectDistrict: (districtName: string) => void;
   onFitIndia: () => void;
   opacity: number;
-  basemap: BasemapOption;
+  basemap?: BasemapOption;
 }
 
 function slugify(text: string): string {
@@ -100,7 +101,6 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
   onSelectDistrict,
   onFitIndia,
   opacity,
-  basemap,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -176,7 +176,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       minZoom: 4,
       maxZoom: 14,
       zoomControl: false,
-      attributionControl: false,
+      attributionControl: true,
       preferCanvas: true,
     });
 
@@ -196,6 +196,13 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     // High-performance canvas renderer for district markers
     canvasRendererRef.current = L.canvas({ pane: 'markerPane' });
     pointsLayerRef.current = L.layerGroup([], { pane: 'markerPane' }).addTo(map);
+
+    // Exclusively OpenStreetMap base layer with visible attribution & harmonized styling
+    tileLayerRef.current = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+      maxZoom: 19,
+      className: 'tatva-osm-tiles',
+    }).addTo(map);
 
     mapRef.current = map;
 
@@ -231,49 +238,23 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     };
     loadNationalBoundary();
 
+    // Observe container resize to seamlessly invalidate Leaflet dimensions
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    if (mapContainerRef.current) {
+      resizeObserver.observe(mapContainerRef.current);
+    }
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 250);
+
     return () => {
+      resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
     };
   }, []);
-
-  // ---------------------------------------------------------------------------
-  // 2. Basemap Switcher
-  // ---------------------------------------------------------------------------
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    if (tileLayerRef.current) {
-      map.removeLayer(tileLayerRef.current);
-      tileLayerRef.current = null;
-    }
-
-    if (basemap === 'dark') {
-      tileLayerRef.current = L.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-        {
-          attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-          subdomains: 'abcd',
-          maxZoom: 19,
-        }
-      ).addTo(map);
-    } else if (basemap === 'osm') {
-      tileLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors',
-        maxZoom: 19,
-      }).addTo(map);
-    } else {
-      tileLayerRef.current = L.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-        {
-          attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-          subdomains: 'abcd',
-          maxZoom: 19,
-        }
-      ).addTo(map);
-    }
-  }, [basemap]);
 
   // ---------------------------------------------------------------------------
   // 3. Strict Boundary-Clipped Hardware Canvas Weather Layer
@@ -394,8 +375,32 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
         const west = mapBounds.getWest();
         const east = mapBounds.getEast();
 
-        // 1. District View
-        if (curDist && curDistData?.observations?.length) {
+        // Check if weatherStore has active incremental records for current view
+        const storeMap = weatherStore.getRecordsMap();
+        if (storeMap.size > 0) {
+          const step = (curDist || curState) ? 0.1 : 0.5;
+          storeMap.forEach((pt) => {
+            const p = pt.precipitation;
+            if (p < 0.1) return;
+
+            const lat = pt.latitude;
+            const lon = pt.longitude;
+            if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
+              return;
+            }
+
+            const nw = this._map.latLngToContainerPoint([lat + step / 2, lon - step / 2]);
+            const se = this._map.latLngToContainerPoint([lat - step / 2, lon + step / 2]);
+            const w = Math.ceil(se.x - nw.x);
+            const h = Math.ceil(se.y - nw.y);
+
+            ctx.fillStyle = getPrecipitationColor(p);
+            ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
+          });
+        }
+        // Fallback to snapshot props data if store is loading or empty
+        // 1. District View Fallback
+        else if (curDist && curDistData?.observations?.length) {
           const obs = curDistData.observations;
           const step = 0.1;
           for (let i = 0; i < obs.length; i++) {
@@ -418,7 +423,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
             ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
           }
         }
-        // 2. State View
+        // 2. State View Fallback
         else if (curState && curStateData?.observations?.length) {
           const obs = curStateData.observations;
           const step = 0.1;
@@ -442,7 +447,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
             ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
           }
         }
-        // 3. National Overview (Strictly clipped to official Survey of India boundary)
+        // 3. National Overview Fallback
         else if (curOverview?.grid_points?.length) {
           const gridPoints = curOverview.grid_points;
           const step = curOverview.grid_step || 0.5;
@@ -481,11 +486,30 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     };
   }, [overviewData, stateData, districtData, selectedState, selectedDistrict, opacity]);
 
-  // Trigger canvas redraw whenever data changes
+  // Trigger throttled canvas redraw whenever data changes or WebSocket increments arrive
   useEffect(() => {
-    if (canvasLayerRef.current && canvasLayerRef.current._draw) {
-      canvasLayerRef.current._draw();
-    }
+    let animFrame: number | null = null;
+    const requestRedraw = () => {
+      if (animFrame) return;
+      animFrame = requestAnimationFrame(() => {
+        animFrame = null;
+        if (canvasLayerRef.current && canvasLayerRef.current._draw) {
+          canvasLayerRef.current._draw();
+        }
+      });
+    };
+
+    requestRedraw();
+
+    // Subscribe to incremental weatherStore updates (re-renders only raster canvas at 60fps)
+    const unsubscribe = weatherStore.subscribe(() => {
+      requestRedraw();
+    });
+
+    return () => {
+      if (animFrame) cancelAnimationFrame(animFrame);
+      unsubscribe();
+    };
   }, [overviewData, stateData, districtData, selectedState, selectedDistrict, opacity]);
 
   // ---------------------------------------------------------------------------
@@ -510,8 +534,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     const initStates = (geojson: any) => {
       if (!mapRef.current) return;
 
-      const isDarkMode = basemap === 'dark';
-      const defaultBorderColor = isDarkMode ? '#64748b' : '#475569';
+      const defaultBorderColor = '#475569';
 
       const layer = L.geoJSON(geojson, {
         pane: 'boundaryPane',
@@ -610,7 +633,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
         })
         .catch((err) => console.warn('Could not load states geojson:', err));
     }
-  }, [overviewData, selectedState, onSelectState, basemap, updateInspector, resetInspector]);
+  }, [overviewData, selectedState, onSelectState, updateInspector, resetInspector]);
 
   // ---------------------------------------------------------------------------
   // 5. Districts GeoJSON Layer (Loaded On Demand When State Selected)
@@ -637,8 +660,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     const initDistricts = (geojson: any) => {
       if (!mapRef.current || !selectedState) return;
 
-      const isDarkMode = basemap === 'dark';
-      const defaultBorderColor = isDarkMode ? '#94a3b8' : '#64748b';
+      const defaultBorderColor = '#64748b';
 
       const layer = L.geoJSON(geojson, {
         pane: 'boundaryPane',
@@ -747,65 +769,124 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
           console.warn(`Could not load district geojson for ${selectedState}:`, err);
         });
     }
-  }, [selectedState, selectedDistrict, stateData, onSelectDistrict, basemap, updateInspector, resetInspector]);
+  }, [selectedState, selectedDistrict, stateData, onSelectDistrict, updateInspector, resetInspector]);
 
   // ---------------------------------------------------------------------------
-  // 6. District Observation Markers (Canvas Layer Only, Zero SVG DOM Nodes)
+  // 6. District Observation Markers (In-Place Incremental Canvas Markers)
   // ---------------------------------------------------------------------------
+  const districtMarkersMapRef = useRef<Map<string, L.CircleMarker>>(new Map());
+
   useEffect(() => {
     const pointsGroup = pointsLayerRef.current;
     const canvasRenderer = canvasRendererRef.current;
     if (!pointsGroup || !canvasRenderer) return;
 
-    pointsGroup.clearLayers();
-
-    if (!selectedDistrict || !districtData?.observations?.length) return;
-
-    for (const pt of districtData.observations) {
+    // Helper to render or update a single marker in place
+    const upsertMarker = (pt: {
+      latitude: number;
+      longitude: number;
+      precipitation: number;
+      liquid: number;
+      ice: number;
+    }, id: string) => {
       const color = getPrecipitationColor(pt.precipitation);
       const radius = Math.min(6, Math.max(3, Math.sqrt(pt.precipitation + 1) * 1.4));
+      const tooltipContent = `<div class="weather-map-tooltip">
+        <div class="tooltip-header">
+          <span class="tooltip-title">${pt.latitude.toFixed(2)}° N, ${pt.longitude.toFixed(2)}° E</span>
+        </div>
+        <div class="tooltip-body">
+          <div class="tooltip-stat"><span class="tooltip-label">Rain</span><span class="tooltip-val highlight">${pt.precipitation.toFixed(1)} mm/hr</span></div>
+          <div class="tooltip-stat"><span class="tooltip-label">Liquid</span><span class="tooltip-val">${pt.liquid.toFixed(1)} mm</span></div>
+          <div class="tooltip-stat"><span class="tooltip-label">Ice</span><span class="tooltip-val">${pt.ice.toFixed(1)} mm</span></div>
+        </div>
+      </div>`;
 
-      const marker = L.circleMarker([pt.latitude, pt.longitude], {
-        renderer: canvasRenderer,
-        pane: 'markerPane',
-        radius: radius,
-        fillColor: color,
-        color: '#0f172a',
-        weight: 0.8,
-        opacity: 0.85,
-        fillOpacity: 0.92,
-      });
+      if (districtMarkersMapRef.current.has(id)) {
+        // IN-PLACE UPDATE (0 DOM nodes, 0 Leaflet layer additions)
+        const marker = districtMarkersMapRef.current.get(id)!;
+        marker.setStyle({ fillColor: color, radius: radius });
+        marker.setTooltipContent(tooltipContent);
+      } else {
+        // Add single marker
+        const marker = L.circleMarker([pt.latitude, pt.longitude], {
+          renderer: canvasRenderer,
+          pane: 'markerPane',
+          radius: radius,
+          fillColor: color,
+          color: '#0f172a',
+          weight: 0.8,
+          opacity: 0.85,
+          fillOpacity: 0.92,
+        });
 
-      marker.bindTooltip(
-        `<div class="weather-map-tooltip">
-          <div class="tooltip-header">
-            <span class="tooltip-title">${pt.latitude.toFixed(2)}° N, ${pt.longitude.toFixed(2)}° E</span>
-          </div>
-          <div class="tooltip-body">
-            <div class="tooltip-stat"><span class="tooltip-label">Rain</span><span class="tooltip-val highlight">${pt.precipitation.toFixed(1)} mm/hr</span></div>
-            <div class="tooltip-stat"><span class="tooltip-label">Liquid</span><span class="tooltip-val">${pt.liquid.toFixed(1)} mm</span></div>
-            <div class="tooltip-stat"><span class="tooltip-label">Ice</span><span class="tooltip-val">${pt.ice.toFixed(1)} mm</span></div>
-          </div>
-        </div>`,
-        {
+        marker.bindTooltip(tooltipContent, {
           sticky: true,
           className: 'leaflet-tooltip-clean',
           direction: 'top',
           offset: [0, -6],
-        }
-      );
+        });
 
-      marker.on('mouseover', () => {
-        updateInspector(
-          `${selectedDistrict} Point`,
-          pt.latitude,
-          pt.longitude,
-          pt.precipitation
-        );
-      });
+        marker.on('mouseover', () => {
+          updateInspector(
+            `${selectedDistrict} Point`,
+            pt.latitude,
+            pt.longitude,
+            pt.precipitation
+          );
+        });
 
-      pointsGroup.addLayer(marker);
+        pointsGroup.addLayer(marker);
+        districtMarkersMapRef.current.set(id, marker);
+      }
+    };
+
+    // If no district selected, clear markers
+    if (!selectedDistrict) {
+      pointsGroup.clearLayers();
+      districtMarkersMapRef.current.clear();
+      return;
     }
+
+    // Populate initial markers from store or districtData prop if not already loaded
+    const storeMap = weatherStore.getRecordsMap();
+    if (storeMap.size > 0 && districtMarkersMapRef.current.size === 0) {
+      storeMap.forEach((rec, id) => {
+        upsertMarker(rec, id);
+      });
+    } else if (districtData?.observations?.length && districtMarkersMapRef.current.size === 0) {
+      for (const pt of districtData.observations) {
+        const id = weatherStore.makeId(pt.latitude, pt.longitude);
+        upsertMarker(pt, id);
+      }
+    }
+
+    // Subscribe to incremental changes from WebSocket
+    const unsubscribe = weatherStore.subscribe((evt) => {
+      if (!selectedDistrict) return;
+
+      // 1. Remove expired / dried up markers
+      for (const remId of evt.removedIds) {
+        const marker = districtMarkersMapRef.current.get(remId);
+        if (marker) {
+          pointsGroup.removeLayer(marker);
+          districtMarkersMapRef.current.delete(remId);
+        }
+      }
+
+      // 2. Update changed markers in place
+      const currentMap = weatherStore.getRecordsMap();
+      for (const changedId of evt.changedIds) {
+        const pt = currentMap.get(changedId);
+        if (pt) {
+          upsertMarker(pt, changedId);
+        }
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, [selectedDistrict, districtData, updateInspector]);
 
   // ---------------------------------------------------------------------------

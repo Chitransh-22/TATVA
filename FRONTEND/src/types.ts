@@ -125,3 +125,121 @@ export interface HistoricalSeriesResponse {
   count: number;
   timeline: HistoricalTimelinePoint[];
 }
+
+export interface StateWeatherData {
+  id: string;
+  name: string;
+  code: string;
+  rainfall: number; // mm/hr
+  category: 'Normal' | 'Moderate' | 'Heavy' | 'Very Heavy' | 'Torrential Downpour';
+  color: string;
+  alertLevel: 'green' | 'yellow' | 'orange' | 'red';
+  humidity: number;
+  windSpeed: number; // km/h
+  temperature: number; // °C
+  stationCount: number;
+  svgPath: string;
+  center: [number, number]; // [x, y] on SVG viewBox
+}
+
+export interface NationalMetrics {
+  averageRainfall: number;
+  peakIntensity: number;
+  peakState: string;
+  totalObservations: number;
+  dominantCategory: string;
+  timestamp: string;
+}
+
+export interface ProcessStep {
+  stepNumber: number;
+  totalSteps: number;
+  title: string;
+  description: string;
+  image: string;
+  tags: { label: string; icon: string }[];
+}
+
+export type BasemapOption = 'carto' | 'dark' | 'osm';
+
+// =============================================================================
+// WebSocket Incremental Real-Time Architecture Types
+// =============================================================================
+
+export interface WebSocketSubscriptionAction {
+  action: 'subscribe' | 'ping' | 'unsubscribe';
+  state?: string | null;
+  district?: string | null;
+  parameter?: string;
+  bounds?: { north: number; south: number; east: number; west: number };
+  zoom?: number;
+}
+
+export interface IncrementalWeatherPoint {
+  id: string; // Coordinate hash e.g. "23.05_72.55"
+  lat: number;
+  lon: number;
+  value: number; // Precipitation mm/hr
+  precipitation?: number;
+  liquid?: number;
+  ice?: number;
+  liquid_percent?: number;
+  timestamp: string;
+}
+
+export interface WebSocketBatchMessage {
+  type: 'weather_batch' | 'weather_update';
+  version?: number;
+  timestamp: string;
+  timestamp_ist?: string;
+  granule_id?: string;
+  state?: string | null;
+  district?: string | null;
+  updates_count?: number;
+  updates: IncrementalWeatherPoint[];
+  removals?: string[]; // Point IDs to remove/expire
+  summary?: {
+    avg_precipitation: number;
+    max_precipitation: number;
+    min_precipitation: number;
+    total_points: number;
+    rain_category: string;
+  };
+}
+
+export interface WebSocketRemoveMessage {
+  type: 'weather_remove';
+  timestamp: string;
+  ids: string[];
+  state?: string | null;
+  district?: string | null;
+}
+
+export interface WebSocketSubscribedMessage {
+  type: 'subscribed';
+  subscription: {
+    state: string | null;
+    district: string | null;
+    parameter: string;
+  };
+  timestamp: string;
+}
+
+export interface WebSocketConnectedMessage {
+  type: 'connected';
+  client_id: string;
+  timestamp: string;
+  message: string;
+}
+
+export interface WebSocketPongMessage {
+  type: 'pong';
+  timestamp: string;
+}
+
+export type WebSocketMessage =
+  | WebSocketBatchMessage
+  | WebSocketRemoveMessage
+  | WebSocketSubscribedMessage
+  | WebSocketConnectedMessage
+  | WebSocketPongMessage;
