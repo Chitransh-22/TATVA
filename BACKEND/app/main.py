@@ -9,6 +9,7 @@ from app.ingestion.kafka_bus import kafka_bus
 from app.ingestion.pipeline import pipeline_service
 from app.ingestion.topics import ALL_TOPICS
 from app.scheduler.scheduler_service import ingestion_scheduler
+from app.api.ws_manager import weather_ws_manager
 from app.api.weather import router as weather_router
 from app.api.ingestion import router as ingestion_router
 
@@ -41,11 +42,15 @@ async def lifespan(app: FastAPI):
     if settings.SCHEDULER_ENABLED:
         await ingestion_scheduler.start()
 
+    # 5. Start real-time WebSocket incremental broadcaster
+    await weather_ws_manager.start()
+
     logger.info("RITU Weather Big Data Platform is ready.")
     yield
 
     # Shutdown
     logger.info("Shutting down RITU Platform...")
+    await weather_ws_manager.stop()
     await ingestion_scheduler.stop()
     await kafka_bus.stop()
     logger.info("Shutdown complete.")

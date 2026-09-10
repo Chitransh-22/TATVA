@@ -321,6 +321,34 @@
   background: #cbd5e1;
 }
 
+/* OpenStreetMap Harmonization with TATVA theme */
+.tatva-osm-tiles {
+  filter: brightness(0.98) contrast(1.04) saturate(0.92);
+}
+
+/* Elegant Leaflet Attribution Bar adhering to OSM guidelines */
+.leaflet-control-attribution {
+  background: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(6px);
+  padding: 2px 8px !important;
+  font-size: 10px !important;
+  font-family: inherit !important;
+  color: #475569 !important;
+  border-top-left-radius: 6px;
+  border: 1px solid rgba(203, 213, 225, 0.7);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+}
+
+.leaflet-control-attribution a {
+  color: #0284c7 !important;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.leaflet-control-attribution a:hover {
+  text-decoration: underline;
+}
+
 /* 4. Floating Breadcrumb Trail (Top-Left of Map) */
 .floating-breadcrumbs {
   position: absolute;

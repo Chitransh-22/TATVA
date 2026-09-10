@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from fastapi import APIRouter, Depends, Query, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -12,6 +12,7 @@ from sqlalchemy import text
 from app.database.connection import get_db
 from app.analytics.aggregator import analytics_aggregator
 from app.api.broadcaster import weather_broadcaster
+from app.api.ws_manager import weather_ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -75,46 +76,44 @@ async def get_weather_metadata(db: AsyncSession = Depends(get_db)) -> Dict[str, 
     Includes authoritative database timestamps formatted in IST.
     """
     try:
-        # 1. Latest observation time that has full data (> 100 points) or absolute max
-        time_res = await db.execute(text("""
-            SELECT observation_time, granule_id, COUNT(*) as pt_count
-            FROM precipitation_observations
-            GROUP BY observation_time, granule_id
-            ORDER BY COUNT(*) DESC, observation_time DESC
-            LIMIT 1;
-        """))
-        best_row = time_res.first()
-
-        max_res = await db.execute(text("SELECT MAX(observation_time) as max_time FROM precipitation_observations;"))
-        abs_max_time = max_res.scalar_one_or_none()
-
-        latest_time = best_row.observation_time if best_row else abs_max_time
-        latest_granule = best_row.granule_id if best_row else "NONE"
-        total_pts = best_row.pt_count if best_row else 0
-
-        # 2. Total points across all partitions
-        total_all_res = await db.execute(text("SELECT COUNT(*) FROM precipitation_observations;"))
-        total_all = total_all_res.scalar_one_or_none() or 0
-
-        # 3. Available distinct observation timestamps for timeline scrubbing
+        # 1. Available distinct observation timestamps from ingestion_ledger (COMPLETED status)
         times_res = await db.execute(text("""
-            SELECT observation_time, granule_id, COUNT(*) as pt_count
-            FROM precipitation_observations
-            GROUP BY observation_time, granule_id
+            SELECT observation_time, granule_id, row_count
+            FROM ingestion_ledger
+            WHERE status = 'COMPLETED'
             ORDER BY observation_time DESC
             LIMIT 20;
         """))
-        available_times = [
-            {
-                "observation_time": r.observation_time.isoformat(),
-                "observation_ist": _to_ist_str(r.observation_time),
-                "granule_id": r.granule_id,
-                "point_count": r.pt_count,
-            }
-            for r in times_res.fetchall()
-        ]
+        ledger_completed = times_res.fetchall()
 
-        # 4. Latest ledger entry
+        if ledger_completed:
+            latest_time = ledger_completed[0].observation_time
+            latest_granule = ledger_completed[0].granule_id
+            total_pts = int(ledger_completed[0].row_count or 0)
+            available_times = [
+                {
+                    "observation_time": r.observation_time.isoformat(),
+                    "observation_ist": _to_ist_str(r.observation_time),
+                    "granule_id": r.granule_id,
+                    "point_count": int(r.row_count or 0),
+                }
+                for r in ledger_completed
+            ]
+        else:
+            latest_time = None
+            latest_granule = "NONE"
+            total_pts = 0
+            available_times = []
+
+        # 2. Total points recorded across all completed granules
+        total_all_res = await db.execute(text("""
+            SELECT COALESCE(SUM(row_count), 0)
+            FROM ingestion_ledger
+            WHERE status = 'COMPLETED';
+        """))
+        total_all = int(total_all_res.scalar_one_or_none() or 0)
+
+        # 3. Latest ledger entry for pipeline status
         ledger_res = await db.execute(text("""
             SELECT granule_id, status, observation_time, row_count, created_at, updated_at
             FROM ingestion_ledger
@@ -158,23 +157,28 @@ async def get_india_overview(
 ) -> Dict[str, Any]:
     """Retrieve full India overview: national metrics, state summaries, and canvas raster points."""
     try:
-        # Resolve target observation_time
+        # Resolve target observation_time from ingestion_ledger
         if observation_time:
             target_dt = _parse_iso_time(observation_time)
         else:
             time_query = text("""
                 SELECT observation_time
-                FROM precipitation_observations
-                GROUP BY observation_time
-                HAVING COUNT(*) > 500
+                FROM ingestion_ledger
+                WHERE status = 'COMPLETED' AND row_count > 500
                 ORDER BY observation_time DESC
                 LIMIT 1;
             """)
             res = await db.execute(time_query)
             target_dt = res.scalar_one_or_none()
             if not target_dt:
-                abs_time = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations;"))
-                target_dt = abs_time.scalar_one_or_none()
+                time_fb = await db.execute(text("""
+                    SELECT observation_time
+                    FROM ingestion_ledger
+                    WHERE status = 'COMPLETED'
+                    ORDER BY observation_time DESC
+                    LIMIT 1;
+                """))
+                target_dt = time_fb.scalar_one_or_none()
 
         if not target_dt:
             return {
@@ -329,22 +333,27 @@ async def get_state_weather(
         if not state:
             raise HTTPException(status_code=404, detail=f"State '{state_name}' not found.")
 
-        # Resolve observation time
+        # Resolve observation time from ingestion_ledger
         if observation_time:
             target_dt = _parse_iso_time(observation_time)
         else:
             time_res = await db.execute(text("""
                 SELECT observation_time
-                FROM precipitation_observations
-                GROUP BY observation_time
-                HAVING COUNT(*) > 500
+                FROM ingestion_ledger
+                WHERE status = 'COMPLETED' AND row_count > 500
                 ORDER BY observation_time DESC
                 LIMIT 1;
             """))
             target_dt = time_res.scalar_one_or_none()
             if not target_dt:
-                abs_time = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations;"))
-                target_dt = abs_time.scalar_one_or_none()
+                time_fb = await db.execute(text("""
+                    SELECT observation_time
+                    FROM ingestion_ledger
+                    WHERE status = 'COMPLETED'
+                    ORDER BY observation_time DESC
+                    LIMIT 1;
+                """))
+                target_dt = time_fb.scalar_one_or_none()
 
         if not target_dt:
             return {
@@ -358,31 +367,54 @@ async def get_state_weather(
         if cache_key in _CACHE_STATE:
             return _CACHE_STATE[cache_key]
 
-        # 1. State Summary
-        state_sum_res = await db.execute(text("""
-            SELECT
-                ROUND(COALESCE(AVG(o.precipitation), 0)::numeric, 2) as avg_p,
-                ROUND(COALESCE(MAX(o.precipitation), 0)::numeric, 2) as max_p,
-                ROUND(COALESCE(MIN(o.precipitation), 0)::numeric, 2) as min_p,
-                COUNT(o.latitude) as pt_count
-            FROM precipitation_observations o
-            WHERE o.observation_time = :obs_time
-              AND o.latitude BETWEEN :min_lat AND :max_lat
-              AND o.longitude BETWEEN :min_lon AND :max_lon;
-        """), {"obs_time": target_dt, "min_lat": state.min_lat, "max_lat": state.max_lat, "min_lon": state.min_lon, "max_lon": state.max_lon})
-        st_sum = state_sum_res.first()
-        max_p = float(st_sum.max_p or 0.0) if st_sum else 0.0
+        # 1. State Summary - Check precomputed weather_region_summary first
+        st_sum_res = await db.execute(text("""
+            SELECT avg_precipitation, max_precipitation, min_precipitation, total_points, rain_category
+            FROM weather_region_summary
+            WHERE observation_time = :obs_time AND region_type = 'STATE' AND region_name ILIKE :st
+            LIMIT 1;
+        """), {"obs_time": target_dt, "st": state.state_name})
+        st_sum_row = st_sum_res.first()
 
-        state_summary = {
-            "avg_precipitation": float(st_sum.avg_p or 0.0) if st_sum else 0.0,
-            "max_precipitation": max_p,
-            "min_precipitation": float(st_sum.min_p or 0.0) if st_sum else 0.0,
-            "total_points": int(st_sum.pt_count or 0) if st_sum else 0,
-            "rain_category": _classify_rain(max_p),
-        }
+        if st_sum_row:
+            state_summary = {
+                "avg_precipitation": float(st_sum_row.avg_precipitation or 0.0),
+                "max_precipitation": float(st_sum_row.max_precipitation or 0.0),
+                "min_precipitation": float(st_sum_row.min_precipitation or 0.0),
+                "total_points": int(st_sum_row.total_points or 0),
+                "rain_category": st_sum_row.rain_category,
+            }
+        else:
+            state_sum_res2 = await db.execute(text("""
+                SELECT
+                    ROUND(COALESCE(AVG(o.precipitation), 0)::numeric, 2) as avg_p,
+                    ROUND(COALESCE(MAX(o.precipitation), 0)::numeric, 2) as max_p,
+                    ROUND(COALESCE(MIN(o.precipitation), 0)::numeric, 2) as min_p,
+                    COUNT(o.latitude) as pt_count
+                FROM precipitation_observations o
+                WHERE o.observation_time = :obs_time
+                  AND o.latitude BETWEEN :min_lat AND :max_lat
+                  AND o.longitude BETWEEN :min_lon AND :max_lon;
+            """), {"obs_time": target_dt, "min_lat": state.min_lat, "max_lat": state.max_lat, "min_lon": state.min_lon, "max_lon": state.max_lon})
+            st_sum = state_sum_res2.first()
+            max_p = float(st_sum.max_p or 0.0) if st_sum else 0.0
+            state_summary = {
+                "avg_precipitation": float(st_sum.avg_p or 0.0) if st_sum else 0.0,
+                "max_precipitation": max_p,
+                "min_precipitation": float(st_sum.min_p or 0.0) if st_sum else 0.0,
+                "total_points": int(st_sum.pt_count or 0) if st_sum else 0,
+                "rain_category": _classify_rain(max_p),
+            }
 
-        # 2. Districts in this state with their precipitation rollups
+        # 2. Districts in this state with their precipitation rollups (CTE bounded by state bbox)
         dist_res = await db.execute(text("""
+            WITH state_obs AS (
+                SELECT latitude, longitude, precipitation
+                FROM precipitation_observations
+                WHERE observation_time = :obs_time
+                  AND latitude BETWEEN :min_lat AND :max_lat
+                  AND longitude BETWEEN :min_lon AND :max_lon
+            )
             SELECT
                 d.district_name,
                 d.min_lat, d.max_lat, d.min_lon, d.max_lon, d.center_lat, d.center_lon,
@@ -391,14 +423,20 @@ async def get_state_weather(
                 ROUND(COALESCE(MIN(o.precipitation), 0)::numeric, 2) as min_p,
                 COUNT(o.latitude) as pt_count
             FROM boundary_districts d
-            LEFT JOIN precipitation_observations o ON
-                o.observation_time = :obs_time
-                AND o.latitude BETWEEN d.min_lat AND d.max_lat
+            LEFT JOIN state_obs o ON
+                o.latitude BETWEEN d.min_lat AND d.max_lat
                 AND o.longitude BETWEEN d.min_lon AND d.max_lon
             WHERE d.state_name ILIKE :st
             GROUP BY d.id, d.district_name, d.min_lat, d.max_lat, d.min_lon, d.max_lon, d.center_lat, d.center_lon
             ORDER BY avg_p DESC, d.district_name ASC;
-        """), {"obs_time": target_dt, "st": f"%{state.state_name}%"})
+        """), {
+            "obs_time": target_dt,
+            "min_lat": state.min_lat,
+            "max_lat": state.max_lat,
+            "min_lon": state.min_lon,
+            "max_lon": state.max_lon,
+            "st": f"%{state.state_name}%"
+        })
         district_rows = dist_res.fetchall()
 
         district_summaries = [
@@ -415,24 +453,26 @@ async def get_state_weather(
             for r in district_rows
         ]
 
-        # 3. Observations points in state (for granular rendering in state view)
+        # 3. Observations points in state (Only points with measurable rain >= 0.1 mm/hr)
+        # Avoids sending 4,000 zero-value points that are never rendered by the canvas!
         obs_res = await db.execute(text("""
             SELECT
-                o.latitude, o.longitude, o.precipitation, o.liquid, o.ice, o.liquid_percent
+                o.latitude, o.longitude, o.precipitation
             FROM precipitation_observations o
             WHERE o.observation_time = :obs_time
               AND o.latitude BETWEEN :min_lat AND :max_lat
               AND o.longitude BETWEEN :min_lon AND :max_lon
-            LIMIT 4000;
+              AND o.precipitation >= 0.1
+            LIMIT 2000;
         """), {"obs_time": target_dt, "min_lat": state.min_lat, "max_lat": state.max_lat, "min_lon": state.min_lon, "max_lon": state.max_lon})
         observations = [
             {
-                "latitude": r.latitude,
-                "longitude": r.longitude,
-                "precipitation": r.precipitation,
-                "liquid": r.liquid,
-                "ice": r.ice,
-                "liquid_percent": r.liquid_percent,
+                "latitude": float(r.latitude),
+                "longitude": float(r.longitude),
+                "precipitation": float(r.precipitation),
+                "liquid": float(r.precipitation),
+                "ice": 0.0,
+                "liquid_percent": 100.0,
             }
             for r in obs_res.fetchall()
         ]
@@ -471,44 +511,63 @@ async def get_district_weather(
 ) -> Dict[str, Any]:
     """Retrieve detailed weather observations strictly within a district boundary."""
     try:
-        # Match district
-        dist_res = await db.execute(text("""
-            SELECT id, state_name, district_name, min_lat, max_lat, min_lon, max_lon, center_lat, center_lon
-            FROM boundary_districts
-            WHERE district_name ILIKE :dist AND state_name ILIKE :st
-            LIMIT 1;
-        """), {"dist": f"%{district_name.strip()}%", "st": f"%{state_name.strip()}%"})
-        district = dist_res.first()
+        # Match district with phonetic/alias support (e.g. Ahmedabad -> Ahmadabad)
+        clean_dist = district_name.strip()
+        search_terms = [clean_dist]
+        if "ahmed" in clean_dist.lower():
+            search_terms.append(clean_dist.lower().replace("ahmed", "ahmad"))
+        elif "ahmad" in clean_dist.lower():
+            search_terms.append(clean_dist.lower().replace("ahmad", "ahmed"))
+
+        district = None
+        for term in search_terms:
+            dist_res = await db.execute(text("""
+                SELECT id, state_name, district_name, min_lat, max_lat, min_lon, max_lon, center_lat, center_lon
+                FROM boundary_districts
+                WHERE district_name ILIKE :dist AND state_name ILIKE :st
+                LIMIT 1;
+            """), {"dist": f"%{term}%", "st": f"%{state_name.strip()}%"})
+            district = dist_res.first()
+            if district:
+                break
 
         # Fallback if state name mismatch (e.g. Pune in Maharashtra)
         if not district:
-            dist_res2 = await db.execute(text("""
-                SELECT id, state_name, district_name, min_lat, max_lat, min_lon, max_lon, center_lat, center_lon
-                FROM boundary_districts
-                WHERE district_name ILIKE :dist
-                LIMIT 1;
-            """), {"dist": f"%{district_name.strip()}%"})
-            district = dist_res2.first()
+            for term in search_terms:
+                dist_res2 = await db.execute(text("""
+                    SELECT id, state_name, district_name, min_lat, max_lat, min_lon, max_lon, center_lat, center_lon
+                    FROM boundary_districts
+                    WHERE district_name ILIKE :dist
+                    LIMIT 1;
+                """), {"dist": f"%{term}%"})
+                district = dist_res2.first()
+                if district:
+                    break
 
         if not district:
             raise HTTPException(status_code=404, detail=f"District '{district_name}' not found.")
 
-        # Resolve observation time
+        # Resolve observation time from ingestion_ledger
         if observation_time:
             target_dt = _parse_iso_time(observation_time)
         else:
             time_res = await db.execute(text("""
                 SELECT observation_time
-                FROM precipitation_observations
-                GROUP BY observation_time
-                HAVING COUNT(*) > 500
+                FROM ingestion_ledger
+                WHERE status = 'COMPLETED' AND row_count > 500
                 ORDER BY observation_time DESC
                 LIMIT 1;
             """))
             target_dt = time_res.scalar_one_or_none()
             if not target_dt:
-                abs_time = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations;"))
-                target_dt = abs_time.scalar_one_or_none()
+                time_fb = await db.execute(text("""
+                    SELECT observation_time
+                    FROM ingestion_ledger
+                    WHERE status = 'COMPLETED'
+                    ORDER BY observation_time DESC
+                    LIMIT 1;
+                """))
+                target_dt = time_fb.scalar_one_or_none()
 
         if not target_dt:
             return {
@@ -517,6 +576,11 @@ async def get_district_weather(
                 "district_name": district.district_name,
                 "message": "No observation data available.",
             }
+
+        # Check in-memory cache
+        cache_key = f"{district.state_name}_{district.district_name}_{target_dt.isoformat()}"
+        if cache_key in _CACHE_DISTRICT:
+            return _CACHE_DISTRICT[cache_key]
 
         # Query all observations inside district polygon
         obs_res = await db.execute(text("""
@@ -584,7 +648,7 @@ async def get_district_weather(
             for r in anom_res.fetchall()
         ]
 
-        return {
+        result = {
             "status": "success",
             "state_name": district.state_name,
             "district_name": district.district_name,
@@ -596,6 +660,8 @@ async def get_district_weather(
             "observations": observations,
             "anomalies": anomalies,
         }
+        _CACHE_DISTRICT[cache_key] = result
+        return result
 
     except HTTPException:
         raise
@@ -738,6 +804,57 @@ async def live_weather_stream(request: Request):
             "X-Accel-Buffering": "no",
         }
     )
+
+
+# =============================================================================
+# 6.5 REAL-TIME INCREMENTAL WEBSOCKET STREAM
+# =============================================================================
+
+@router.websocket("/ws")
+async def weather_websocket_endpoint(websocket: WebSocket):
+    """Persistent bidirectional WebSocket connection for live incremental weather telemetry.
+    
+    Receives subscriptions for India, specific states, or specific districts, and streams
+    only modified/new grid points and removals without full-dataset reload.
+    """
+    client_id = await weather_ws_manager.connect(websocket)
+    try:
+        while True:
+            data_text = await websocket.receive_text()
+            try:
+                msg = json.loads(data_text)
+            except Exception:
+                continue
+
+            action = msg.get("action")
+            if action == "subscribe":
+                state = msg.get("state")
+                district = msg.get("district")
+                param = msg.get("parameter", "precipitation")
+                bounds = msg.get("bounds")
+                zoom = msg.get("zoom")
+                await weather_ws_manager.update_subscription(
+                    client_id=client_id,
+                    state=state,
+                    district=district,
+                    parameter=param,
+                    bounds=bounds,
+                    zoom=zoom,
+                )
+            elif action == "ping":
+                await weather_ws_manager.handle_ping(client_id)
+            elif action == "unsubscribe":
+                await weather_ws_manager.update_subscription(
+                    client_id=client_id,
+                    state=None,
+                    district=None,
+                )
+
+    except WebSocketDisconnect:
+        await weather_ws_manager.disconnect(client_id)
+    except Exception as ex:
+        logger.debug(f"WS client {client_id} disconnected: {ex}")
+        await weather_ws_manager.disconnect(client_id)
 
 
 # =============================================================================

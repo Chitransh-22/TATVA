@@ -10,8 +10,6 @@ interface NavbarProps {
   onFitIndia: () => void;
   opacity: number;
   onOpacityChange: (val: number) => void;
-  basemap: BasemapOption;
-  onBasemapChange: (bm: BasemapOption) => void;
   isSidebarCollapsed: boolean;
   onToggleSidebar: () => void;
 }
@@ -23,8 +21,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onFitIndia,
   opacity,
   onOpacityChange,
-  basemap,
-  onBasemapChange,
   isSidebarCollapsed,
   onToggleSidebar,
 }) => {
@@ -78,32 +74,11 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Right Controls */}
       <div className="navbar-actions">
-        {/* Basemap Switcher */}
+        {/* Basemap Indicator */}
         <div className="segmented-control" role="group" aria-label="Basemap Selection">
-          <button
-            type="button"
-            className={`segment-btn ${basemap === 'carto' ? 'active' : ''}`}
-            onClick={() => onBasemapChange('carto')}
-            title="Carto Positron (Clean Light)"
-          >
-            Light
-          </button>
-          <button
-            type="button"
-            className={`segment-btn ${basemap === 'dark' ? 'active' : ''}`}
-            onClick={() => onBasemapChange('dark')}
-            title="Carto Dark Matter (High-Contrast Radar)"
-          >
-            Dark
-          </button>
-          <button
-            type="button"
-            className={`segment-btn ${basemap === 'osm' ? 'active' : ''}`}
-            onClick={() => onBasemapChange('osm')}
-            title="OpenStreetMap Standard"
-          >
-            OSM
-          </button>
+          <span className="segment-btn active" style={{ cursor: 'default' }}>
+            OpenStreetMap
+          </span>
         </div>
 
         {/* Opacity Control */}
