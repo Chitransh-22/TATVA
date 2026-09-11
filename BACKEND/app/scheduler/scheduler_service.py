@@ -6,6 +6,9 @@ from sqlalchemy import text
 from app.config import settings
 from app.database.connection import AsyncSessionLocal
 from app.ingestion.discovery import discovery_service
+from app.ingestion.deduplication import dedup_ledger
+from app.ingestion.downloader import granule_downloader
+from app.ingestion.pipeline import pipeline_service
 from app.api.ws_manager import weather_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -45,8 +48,8 @@ class IngestionScheduler:
                 pass
         logger.info("Ingestion scheduler stopped.")
 
-    async def run_now(self, limit: int = 10) -> int:
-        """Trigger an immediate discovery cycle without blocking the event loop."""
+    async def run_now(self, limit: int = 50) -> int:
+        """Trigger an immediate discovery cycle and auto-ingest latest 30min granules."""
         if self._lock.locked():
             logger.info("Discovery run already in progress. Skipping concurrent trigger.")
             return self.last_run_count
@@ -54,8 +57,41 @@ class IngestionScheduler:
         async with self._lock:
             logger.info("Triggering on-demand discovery run...")
             self.last_run_time = datetime.now(timezone.utc)
-            granules = await discovery_service.run_discovery(emit_to_kafka=True, limit=limit)
+            granules = await discovery_service.run_discovery(emit_to_kafka=True, limit=limit, product_suffix=".30min")
             self.last_run_count = len(granules)
+
+            # Auto-ingest any recent un-ingested 30min precipitation rate granules
+            rate_granules = [
+                g for g in granules
+                if "30min" in g.file_name or g.file_name.endswith(".30min.zip")
+            ]
+            if rate_granules:
+                rate_granules.sort(key=lambda x: x.observation_time, reverse=True)
+                missing_to_ingest = []
+                for rg in rate_granules[:4]:
+                    entry = await dedup_ledger.get_entry(rg.granule_id)
+                    if not entry or entry.get("status") not in ("COMPLETED", "PERSISTED"):
+                        missing_to_ingest.append(rg)
+
+                for mg in reversed(missing_to_ingest):
+                    logger.info(f"[Scheduler] Ingesting missing 30min granule {mg.granule_id} ({mg.observation_time})...")
+                    try:
+                        dl_path = await granule_downloader.download_granule_safe(
+                            source_url=mg.source_url,
+                            file_name=mg.file_name,
+                            expected_size=mg.file_size_bytes,
+                            granule_id=mg.granule_id,
+                        )
+                        if dl_path and dl_path.exists():
+                            success = await pipeline_service.process_granule_direct(
+                                granule_id=mg.granule_id,
+                                zip_path=dl_path,
+                                observation_time=mg.observation_time,
+                            )
+                            logger.info(f"[Scheduler] Ingestion of {mg.granule_id}: {'SUCCESS' if success else 'FAILED'}")
+                    except Exception as ing_err:
+                        logger.error(f"[Scheduler] Error ingesting {mg.granule_id}: {ing_err}")
+
             return self.last_run_count
 
     async def cleanup_expired_observations(self, days: int = 7) -> Dict[str, Any]:
@@ -125,9 +161,13 @@ class IngestionScheduler:
         """Periodic loop running discovery and rolling 7-day cleanup."""
         await asyncio.sleep(3)
         await self.cleanup_expired_observations(days=7)
+        try:
+            await self.run_now()
+        except Exception as init_err:
+            logger.error(f"Error in initial startup discovery/ingestion: {init_err}")
 
-        last_discovery = 0.0
-        last_cleanup = 0.0
+        last_discovery = asyncio.get_event_loop().time()
+        last_cleanup = asyncio.get_event_loop().time()
 
         while self._running:
             try:

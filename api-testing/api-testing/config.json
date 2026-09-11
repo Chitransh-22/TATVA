@@ -1,0 +1,23 @@
+{
+"user_credentials": {
+        "username/email": "techy.tron321@gmail.com",
+        "password": "@Aizen-Zoro-11"
+},
+
+"search_parameters": {
+        "datasetId": "3SIMG_L2B_HEM",
+        "startTime": "2024-09-04",
+        "endTime": "2024-09-11",
+        "count": "10",
+        "boundingBox": "68.0,6.0,98.0,38.0",
+        "gId": ""
+},
+
+"download_settings": {
+        "download_path" : "C:\\Users\\user\\Downloads\\Data-IMD-API",
+        "organize_by_date": false,
+        "skip_user_input": false,
+        "generate_error_logs": true,
+        "error_logs_dir": "C:\\Users\\user\\Downloads\\api-testing"
+}
+} 

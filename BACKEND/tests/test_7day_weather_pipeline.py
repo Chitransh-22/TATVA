@@ -395,12 +395,12 @@ def test_i_dynamic_raw_path_rebasing():
     from app.ingestion.extractor import granule_extractor
 
     # 1. Foreign path from old F:\ drive is rebased to current DATA_RAW_DIR
-    foreign_path = r"F:\Shashwat_Mandali\Coding Script\RITU-platform\BACKEND\data\raw\test_granule.zip"
+    foreign_path = r"F:\OldDrive\SomeForeignPath\BACKEND\data\raw\test_granule.zip"
     resolved = settings.resolve_raw_path(foreign_path)
     expected = (settings.DATA_RAW_DIR / "test_granule.zip").resolve()
     assert resolved == expected
     assert "F:" not in str(resolved) or str(settings.DATA_RAW_DIR).startswith("F:")
-    assert "Shashwat_Mandali" not in str(resolved)
+    assert "OldDrive" not in str(resolved)
 
     # 2. Existing file in current data/raw is recognized
     existing_files = list(settings.DATA_RAW_DIR.glob("*.zip"))

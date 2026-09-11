@@ -501,7 +501,7 @@ async def get_ingestion_status() -> Dict[str, Any]:
 )
 async def trigger_ingestion() -> Dict[str, Any]:
     """Trigger an immediate NASA discovery and ingestion cycle."""
-    asyncio.create_task(ingestion_scheduler.run_now(limit=5))
+    asyncio.create_task(ingestion_scheduler.run_now(limit=30))
     return {
         "status": "triggered",
         "message": "Discovery and ingestion triggered in background task.",

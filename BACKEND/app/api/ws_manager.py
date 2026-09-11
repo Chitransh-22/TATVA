@@ -68,6 +68,23 @@ class WeatherWebSocketManager:
         self._last_ledger_check: Optional[datetime] = None
         # Monotonically increasing sequence/version number
         self._version_counter: int = 1000
+        # Broadcast observability metrics
+        self.last_broadcast_time: Optional[datetime] = None
+        self.last_broadcast_granule: Optional[str] = None
+        self.last_broadcast_updates_count: int = 0
+        self.total_broadcasts: int = 0
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return real-time broadcast and connection metrics for diagnostics."""
+        return {
+            "connected_clients_count": len(self._clients),
+            "last_broadcast_time": self.last_broadcast_time.isoformat() if self.last_broadcast_time else None,
+            "last_broadcast_time_ist": _to_ist_str(self.last_broadcast_time) if self.last_broadcast_time else None,
+            "last_broadcast_granule": self.last_broadcast_granule,
+            "last_broadcast_updates_count": self.last_broadcast_updates_count,
+            "total_broadcasts": self.total_broadcasts,
+            "version": self._version_counter,
+        }
 
     async def start(self):
         """Start WebSocket manager."""
@@ -200,6 +217,10 @@ class WeatherWebSocketManager:
 
         ts = timestamp or datetime.now(timezone.utc)
         self._version_counter += 1
+        self.last_broadcast_time = ts
+        self.last_broadcast_granule = granule_id or "REALTIME-IMERG"
+        self.last_broadcast_updates_count = len(updates)
+        self.total_broadcasts += 1
 
         payload = {
             "type": "weather_batch",
@@ -280,6 +301,10 @@ class WeatherWebSocketManager:
 
         ts = timestamp or datetime.now(timezone.utc)
         self._version_counter += 1
+        self.last_broadcast_time = ts
+        self.last_broadcast_granule = data.get("granule_id") if data else None
+        self.last_broadcast_updates_count = 1
+        self.total_broadcasts += 1
 
         payload = {
             "type": event_type,

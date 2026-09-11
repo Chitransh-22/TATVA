@@ -69,6 +69,7 @@ class GranuleDiscoveryService:
         year: Optional[int] = None,
         month: Optional[int] = None,
         limit: int = 50,
+        product_suffix: Optional[str] = None,
     ) -> List[GranuleDiscoveredMessage]:
         """Scrape directory listing from NASA PPS text directory."""
         now = datetime.now(timezone.utc)
@@ -91,6 +92,8 @@ class GranuleDiscoveryService:
 
             # Text format has lines with permissions, size, date, filename
             lines = [l for l in response.text.splitlines() if l.strip().endswith(".zip")]
+            if product_suffix:
+                lines = [l for l in lines if product_suffix in l]
             # Most recent granules are at the end of the chronological PPS listing
             if limit and len(lines) > limit:
                 lines = lines[-limit:]
@@ -180,11 +183,20 @@ class GranuleDiscoveryService:
 
         return discovered
 
-    async def run_discovery(self, emit_to_kafka: bool = True, limit: int = 20) -> List[GranuleDiscoveredMessage]:
+    async def run_discovery(
+        self,
+        emit_to_kafka: bool = True,
+        limit: int = 50,
+        product_suffix: Optional[str] = None,
+    ) -> List[GranuleDiscoveredMessage]:
         """Execute discovery and publish events to Kafka."""
         granules = await asyncio.to_thread(self.discover_from_opensearch, limit=limit)
         if not granules:
-            granules = await asyncio.to_thread(self.discover_from_pps_directory, limit=limit)
+            granules = await asyncio.to_thread(
+                self.discover_from_pps_directory,
+                limit=limit,
+                product_suffix=product_suffix,
+            )
 
         if emit_to_kafka and granules:
             emitted_count = 0

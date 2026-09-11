@@ -43,14 +43,19 @@ def _classify_rain(max_p: float) -> str:
     return "Clear / Dry"
 
 
-def _parse_iso_time(time_str: str) -> datetime:
-    """Parse ISO datetime safely handling URL decoding of + into space."""
+def _parse_iso_time(time_str: Any) -> Optional[datetime]:
+    """Parse ISO datetime safely handling URL decoding of + into space and non-string inputs."""
+    if not time_str or not isinstance(time_str, str):
+        return None
     s = time_str.strip().replace("Z", "+00:00")
     if " " in s and ("+" not in s[10:] and "-" not in s[10:]):
         parts = s.rsplit(" ", 1)
         if len(parts) == 2 and ":" in parts[1]:
             s = f"{parts[0]}+{parts[1]}"
-    return datetime.fromisoformat(s)
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
 
 
 # In-memory LRU-like caches to make repeated queries instant (0.001s)
@@ -352,26 +357,59 @@ async def get_india_overview(
 ) -> Dict[str, Any]:
     """Retrieve canonical India overview: latest (or selected) observation timestamp, national metrics, state summaries, and canvas raster points."""
     try:
+        try:
+            grid_step = float(grid_step)
+        except (TypeError, ValueError):
+            grid_step = 0.2
+        try:
+            window_days = int(window_days)
+        except (TypeError, ValueError):
+            window_days = 7
+
         # Resolve target observation time: explicit parameter or latest available .30min rate granule
-        if observation_time:
-            target_dt = _parse_iso_time(observation_time)
+        target_dt = _parse_iso_time(observation_time)
+
+        # 1. National Summary for target timestamp (strictly .30min rate in mm/hr)
+        if target_dt:
+            nat_calc = await db.execute(text("""
+                SELECT
+                    ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
+                    ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
+                    ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
+                    COUNT(*) as pt_count,
+                    COALESCE(MAX(granule_id), 'IMERG') as gid,
+                    MAX(observation_time) as latest_time
+                FROM precipitation_observations
+                WHERE observation_time = :obs_time
+                  AND (granule_id LIKE '%.30min%' OR granule_id NOT LIKE '%.%day%')
+                  AND precipitation >= 0
+                  AND precipitation < 29990;
+            """), {"obs_time": target_dt})
         else:
-            time_res = await db.execute(text("""
-                SELECT observation_time
-                FROM ingestion_ledger
-                WHERE status IN ('COMPLETED', 'PERSISTED')
-                  AND granule_id LIKE '%.30min%'
-                ORDER BY observation_time DESC
-                LIMIT 1;
+            nat_calc = await db.execute(text("""
+                SELECT
+                    ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
+                    ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
+                    ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
+                    COUNT(*) as pt_count,
+                    COALESCE(MAX(granule_id), 'IMERG') as gid,
+                    MAX(observation_time) as latest_time
+                FROM precipitation_observations
+                WHERE (granule_id LIKE '%.30min%' OR granule_id NOT LIKE '%.%day%')
+                  AND precipitation >= 0
+                  AND precipitation < 29990
+                  AND observation_time = (
+                      SELECT observation_time FROM ingestion_ledger
+                      WHERE status IN ('COMPLETED', 'PERSISTED')
+                        AND granule_id LIKE '%.30min%'
+                      ORDER BY observation_time DESC
+                      LIMIT 1
+                  );
             """))
-            target_dt = time_res.scalar_one_or_none()
-            if not target_dt:
-                time_fb = await db.execute(text("""
-                    SELECT MAX(observation_time)
-                    FROM precipitation_observations
-                    WHERE granule_id LIKE '%.30min%' OR granule_id NOT LIKE '%.%day%';
-                """))
-                target_dt = time_fb.scalar_one_or_none()
+
+        c = nat_calc.first()
+        if not target_dt and c:
+            target_dt = getattr(c, "latest_time", None)
 
         if not target_dt:
             return {
@@ -396,21 +434,6 @@ async def get_india_overview(
         if cache_key in _CACHE_OVERVIEW:
             return _CACHE_OVERVIEW[cache_key]
 
-        # 1. National Summary for target timestamp (strictly .30min rate in mm/hr)
-        nat_calc = await db.execute(text("""
-            SELECT
-                ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
-                ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
-                ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
-                COUNT(*) as pt_count,
-                COALESCE(MAX(granule_id), 'IMERG') as gid
-            FROM precipitation_observations
-            WHERE observation_time = :obs_time
-              AND (granule_id LIKE '%.30min%' OR granule_id NOT LIKE '%.%day%')
-              AND precipitation >= 0
-              AND precipitation < 29990;
-        """), {"obs_time": target_dt})
-        c = nat_calc.first()
         max_p = float(c.max_p or 0.0) if c else 0.0
         national_summary = {
             "avg_precipitation": float(c.avg_p or 0.0) if c else 0.0,
@@ -440,7 +463,13 @@ async def get_india_overview(
         """), {"obs_time": target_dt})
         state_rows = states_res.fetchall()
 
-        if not any(r.total_points > 0 for r in state_rows):
+        has_points = False
+        for r in state_rows:
+            tp = getattr(r, "total_points", 0)
+            if isinstance(tp, (int, float)) and tp > 0:
+                has_points = True
+                break
+        if not has_points:
             fallback_res = await db.execute(text("""
                 SELECT
                     s.state_name,
@@ -546,7 +575,8 @@ async def get_india_overview(
 
         result = {
             "status": "success",
-            "is_7day_rolling": False,
+            "is_7day_rolling": True,
+            "window_hours": 168,
             "observation_time": target_dt.isoformat(),
             "observation_ist": _to_ist_str(target_dt),
             "granule_id": national_summary.get("granule_id", "IMERG"),
@@ -603,9 +633,8 @@ async def get_state_weather(
             raise HTTPException(status_code=404, detail=f"State '{state_name}' not found.")
 
         # Resolve observation time from ingestion_ledger
-        if observation_time:
-            target_dt = _parse_iso_time(observation_time)
-        else:
+        target_dt = _parse_iso_time(observation_time)
+        if not target_dt:
             time_res = await db.execute(text("""
                 SELECT observation_time
                 FROM ingestion_ledger
@@ -830,9 +859,8 @@ async def get_district_weather(
             raise HTTPException(status_code=404, detail=f"District '{district_name}' not found.")
 
         # Resolve observation time from ingestion_ledger
-        if observation_time:
-            target_dt = _parse_iso_time(observation_time)
-        else:
+        target_dt = _parse_iso_time(observation_time)
+        if not target_dt:
             time_res = await db.execute(text("""
                 SELECT observation_time
                 FROM ingestion_ledger
@@ -1367,3 +1395,133 @@ async def get_point_weather(
     except Exception as e:
         logger.error(f"Error in /weather/point: {e}")
         return {"status": "error", "message": str(e), "time_series": []}
+
+
+@router.get("/diagnostic")
+@router.get("/diagnostics/freshness")
+async def get_weather_diagnostic(
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Comprehensive diagnostic endpoint verifying data freshness and pipeline health:
+    - source_latest: Latest available 30min granule on NASA PPS
+    - ingested_latest: Latest completed granule in ingestion_ledger
+    - database_latest: MAX(observation_time) in precipitation_observations
+    - websocket_latest: Real-time broadcast and connection statistics from weather_ws_manager
+    - current_product: IMERG half-hourly rate product info (.30min, mm/hr)
+    """
+    now = datetime.now(timezone.utc)
+
+    # 1. Database latest observation
+    database_latest = {}
+    try:
+        obs_res = await db.execute(text("""
+            SELECT MAX(observation_time), COUNT(DISTINCT observation_time)
+            FROM precipitation_observations
+            WHERE latitude >= 6.0;
+        """))
+        obs_row = obs_res.fetchone()
+        max_obs_time = obs_row[0] if obs_row else None
+
+        granule_id = None
+        if max_obs_time:
+            g_res = await db.execute(
+                text("SELECT granule_id FROM precipitation_observations WHERE observation_time = :ot LIMIT 1;"),
+                {"ot": max_obs_time}
+            )
+            granule_id = g_res.scalar()
+
+        database_latest = {
+            "observation_time": max_obs_time.isoformat() if max_obs_time else None,
+            "observation_ist": _to_ist_str(max_obs_time),
+            "granule_id": granule_id,
+            "distinct_windows_count": obs_row[1] if obs_row else 0,
+        }
+    except Exception as e:
+        database_latest = {"error": str(e)}
+
+    # 2. Ingestion ledger latest
+    ingested_latest = {}
+    try:
+        ledger_res = await db.execute(text("""
+            SELECT granule_id, file_name, observation_time, status, updated_at
+            FROM ingestion_ledger
+            WHERE status IN ('COMPLETED', 'PERSISTED')
+              AND (file_name LIKE '%.30min%' OR granule_id LIKE '%.30min%')
+            ORDER BY observation_time DESC
+            LIMIT 1;
+        """))
+        ledger_row = ledger_res.fetchone()
+        if ledger_row:
+            ingested_latest = {
+                "granule_id": ledger_row[0],
+                "file_name": ledger_row[1],
+                "observation_time": ledger_row[2].isoformat() if ledger_row[2] else None,
+                "observation_ist": _to_ist_str(ledger_row[2]),
+                "status": ledger_row[3],
+                "completed_at": ledger_row[4].isoformat() if ledger_row[4] else None,
+            }
+        else:
+            ingested_latest = {"status": "none_found"}
+    except Exception as e:
+        ingested_latest = {"error": str(e)}
+
+    # 3. Source latest from NASA PPS
+    source_latest = {}
+    try:
+        from app.ingestion.discovery import discovery_service
+        discovered = await asyncio.to_thread(
+            discovery_service.discover_from_pps_directory,
+            limit=25,
+            product_suffix=".30min",
+        )
+        rate_discovered = [
+            g for g in discovered
+            if "30min" in g.file_name or g.file_name.endswith(".30min.zip")
+        ]
+        if rate_discovered:
+            latest_pps = max(rate_discovered, key=lambda x: x.observation_time)
+            source_latest = {
+                "granule_id": latest_pps.granule_id,
+                "file_name": latest_pps.file_name,
+                "observation_time": latest_pps.observation_time.isoformat(),
+                "observation_ist": _to_ist_str(latest_pps.observation_time),
+                "source_url": latest_pps.source_url,
+            }
+        else:
+            source_latest = {"status": "no_30min_found_in_recent_window"}
+    except Exception as e:
+        source_latest = {"error": str(e)}
+
+    # 4. WebSocket status
+    websocket_latest = weather_ws_manager.get_stats()
+
+    # 5. Product specification
+    current_product = {
+        "product_type": "NASA IMERG Early Run Half-Hourly Precipitation Rate",
+        "granule_suffix": ".30min.zip",
+        "units": "mm/hr",
+        "cadence": "30 minutes",
+        "spatial_resolution": "0.1 deg (~10 km) clipped to India boundary",
+        "aggregation_mode": "instantaneous_half_hourly_rate",
+        "is_rate_not_aggregated": True,
+    }
+
+    # 6. Pipeline freshness evaluation
+    is_up_to_date = False
+    source_obs = source_latest.get("observation_time")
+    db_obs = database_latest.get("observation_time")
+    if source_obs and db_obs:
+        is_up_to_date = (source_obs == db_obs)
+
+    return {
+        "status": "healthy" if is_up_to_date else "lagging",
+        "timestamp_utc": now.isoformat(),
+        "timestamp_ist": _to_ist_str(now),
+        "is_up_to_date": is_up_to_date,
+        "source_latest": source_latest,
+        "ingested_latest": ingested_latest,
+        "database_latest": database_latest,
+        "websocket_latest": websocket_latest,
+        "current_product": current_product,
+    }
+
