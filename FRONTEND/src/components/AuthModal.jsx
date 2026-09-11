@@ -1,13 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import { User, Lock, Mail, X, ShieldCheck } from 'lucide-react';
 import { TatvaLogo } from './TatvaLogo';
 
-interface AuthModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-}
-
-export function AuthModal({ isOpen, onClose }: AuthModalProps) {
+export function AuthModal({ isOpen, onClose }) {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -16,7 +11,7 @@ export function AuthModal({ isOpen, onClose }: AuthModalProps) {
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     setSuccess(true);
     setTimeout(() => {

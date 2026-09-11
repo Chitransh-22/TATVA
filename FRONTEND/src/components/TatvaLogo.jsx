@@ -1,10 +1,4 @@
-interface TatvaLogoProps {
-  size?: 'sm' | 'md' | 'lg' | 'hero';
-  showText?: boolean;
-  className?: string;
-}
-
-export function TatvaLogo({ size = 'md', showText = true, className = '' }: TatvaLogoProps) {
+export function TatvaLogo({ size = 'md', showText = true, className = '' }) {
   const iconSizes = {
     sm: 'w-8 h-8',
     md: 'w-11 h-11',

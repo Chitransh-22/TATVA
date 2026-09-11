@@ -2,19 +2,12 @@ import { useState } from 'react';
 import { BarChart3, AlertTriangle, Settings, User, Menu, X } from 'lucide-react';
 import { TatvaLogo } from './TatvaLogo';
 
-interface SidebarProps {
-  activeTab: string;
-  onSelectTab: (tab: string) => void;
-  onOpenIncidentReport: () => void;
-  onOpenAuthModal: () => void;
-}
-
 export function Sidebar({
   activeTab,
   onSelectTab,
   onOpenIncidentReport,
   onOpenAuthModal,
-}: SidebarProps) {
+}) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navItems = [

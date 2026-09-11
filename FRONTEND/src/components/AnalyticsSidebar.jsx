@@ -1,66 +1,23 @@
-import React, { useState, useMemo } from 'react';
-import type {
-  NationalSummary,
-  StateSummary,
-  DistrictSummary,
-  HistoricalTimelinePoint,
-} from '../types';
+import { useState, useMemo } from 'react';
 import { getCategoryBadgeStyle } from './Legend';
 
-interface AnalyticsSidebarProps {
-  selectedState: string | null;
-  selectedDistrict: string | null;
-  nationalSummary: NationalSummary | null;
-  stateSummaries: StateSummary[];
-  stateSummary: {
-    avg_precipitation: number;
-    max_precipitation: number;
-    min_precipitation: number;
-    total_points: number;
-    rain_category: string;
-  } | null;
-  districtSummaries: DistrictSummary[];
-  districtSummary: {
-    avg_precipitation: number;
-    max_precipitation: number;
-    min_precipitation: number;
-    total_points: number;
-    rain_category: string;
-  } | null;
-  anomalies?: Array<{
-    time: string;
-    latitude: number;
-    longitude: number;
-    precipitation: number;
-    type: string;
-    description: string;
-  }>;
-  historicalTimeline: HistoricalTimelinePoint[];
-  onSelectState: (stateName: string) => void;
-  onSelectDistrict: (districtName: string) => void;
-  onBackToState: () => void;
-  onBackToIndia: () => void;
-  isCollapsed: boolean;
-  onToggleCollapse: () => void;
-}
-
-export const AnalyticsSidebar: React.FC<AnalyticsSidebarProps> = ({
+export function AnalyticsSidebar({
   selectedState,
   selectedDistrict,
   nationalSummary,
-  stateSummaries,
+  stateSummaries = [],
   stateSummary,
-  districtSummaries,
+  districtSummaries = [],
   districtSummary,
   anomalies,
-  historicalTimeline,
+  historicalTimeline = [],
   onSelectState,
   onSelectDistrict,
   onBackToState,
   onBackToIndia,
   isCollapsed,
   onToggleCollapse,
-}) => {
+}) {
   const [districtSearch, setDistrictSearch] = useState('');
 
   // Top states sorted by peak rainfall
@@ -359,4 +316,4 @@ export const AnalyticsSidebar: React.FC<AnalyticsSidebarProps> = ({
       </div>
     </aside>
   );
-};
+}

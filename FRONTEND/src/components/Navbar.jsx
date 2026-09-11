@@ -1,20 +1,4 @@
-import React from 'react';
-import type { WeatherMetadata } from '../types';
-
-export type BasemapOption = 'carto' | 'dark' | 'osm';
-
-interface NavbarProps {
-  metadata: WeatherMetadata | null;
-  selectedTime: string | null;
-  onTimeChange: (time: string) => void;
-  onFitIndia: () => void;
-  opacity: number;
-  onOpacityChange: (val: number) => void;
-  isSidebarCollapsed: boolean;
-  onToggleSidebar: () => void;
-}
-
-export const Navbar: React.FC<NavbarProps> = ({
+export function Navbar({
   metadata,
   selectedTime,
   onTimeChange,
@@ -23,7 +7,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpacityChange,
   isSidebarCollapsed,
   onToggleSidebar,
-}) => {
+}) {
   return (
     <header className="navbar-container">
       {/* Brand Section */}
@@ -124,4 +108,4 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
     </header>
   );
-};
+}

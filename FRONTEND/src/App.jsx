@@ -10,20 +10,13 @@ import { AuthModal } from './components/AuthModal';
 import { NATIONAL_METRICS } from './data/weatherData';
 import { weatherStore } from './data/weatherStore';
 import { useWeatherWebSocket } from './hooks/useWeatherWebSocket';
-import type {
-  WeatherMetadata,
-  IndiaOverviewResponse,
-  StateDetailResponse,
-  DistrictDetailResponse,
-  HistoricalTimelinePoint,
-} from './types';
 import './App.css';
 
 export function App() {
   // Navigation & Selection State
-  const [selectedState, setSelectedState] = useState<string | null>(null);
-  const [selectedDistrict, setSelectedDistrict] = useState<string | null>(null);
-  const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  const [selectedState, setSelectedState] = useState(null);
+  const [selectedDistrict, setSelectedDistrict] = useState(null);
+  const [selectedTime, setSelectedTime] = useState(null);
 
   // Single Persistent WebSocket Hook (Incremental updates, auto-reconnect, heartbeat)
   const { status: wsStatus, telemetry: wsTelemetry } = useWeatherWebSocket(
@@ -32,13 +25,7 @@ export function App() {
   );
 
   // Live Summary from WebSocket for Metric Tiles
-  const [liveSummary, setLiveSummary] = useState<{
-    avg_precipitation: number;
-    max_precipitation: number;
-    min_precipitation: number;
-    total_points: number;
-    rain_category: string;
-  } | null>(null);
+  const [liveSummary, setLiveSummary] = useState(null);
 
   useEffect(() => {
     return weatherStore.subscribeSummary((summary) => {
@@ -47,34 +34,34 @@ export function App() {
   }, []);
 
   // Friend's UI State
-  const [activeTab, setActiveTab] = useState<string>('analysis');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [regionFilter, setRegionFilter] = useState<string>('all');
-  const [isIncidentModalOpen, setIsIncidentModalOpen] = useState<boolean>(false);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState('analysis');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [regionFilter, setRegionFilter] = useState('all');
+  const [isIncidentModalOpen, setIsIncidentModalOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
   // Data State
-  const [metadata, setMetadata] = useState<WeatherMetadata | null>(null);
-  const [overviewData, setOverviewData] = useState<IndiaOverviewResponse | null>(null);
-  const [stateData, setStateData] = useState<StateDetailResponse | null>(null);
-  const [districtData, setDistrictData] = useState<DistrictDetailResponse | null>(null);
-  const [, setHistoricalTimeline] = useState<HistoricalTimelinePoint[]>([]);
+  const [metadata, setMetadata] = useState(null);
+  const [overviewData, setOverviewData] = useState(null);
+  const [stateData, setStateData] = useState(null);
+  const [districtData, setDistrictData] = useState(null);
+  const [, setHistoricalTimeline] = useState([]);
 
   // UI Control State
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [loadingMsg, setLoadingMsg] = useState<string>('Loading live India weather overview...');
-  const [error, setError] = useState<string | null>(null);
-  const [opacity, setOpacity] = useState<number>(0.85);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadingMsg, setLoadingMsg] = useState('Loading live India weather overview...');
+  const [error, setError] = useState(null);
+  const [opacity, setOpacity] = useState(0.85);
 
   // Client-side In-memory Caches (Eliminates redundant network roundtrips on repeated navigation)
-  const overviewCacheRef = useRef<Map<string, IndiaOverviewResponse>>(new Map());
-  const stateCacheRef = useRef<Map<string, StateDetailResponse>>(new Map());
-  const districtCacheRef = useRef<Map<string, DistrictDetailResponse>>(new Map());
+  const overviewCacheRef = useRef(new Map());
+  const stateCacheRef = useRef(new Map());
+  const districtCacheRef = useRef(new Map());
 
   // AbortControllers to cancel in-flight stale requests on rapid clicks
-  const overviewAbortRef = useRef<AbortController | null>(null);
-  const stateAbortRef = useRef<AbortController | null>(null);
-  const districtAbortRef = useRef<AbortController | null>(null);
+  const overviewAbortRef = useRef(null);
+  const stateAbortRef = useRef(null);
+  const districtAbortRef = useRef(null);
 
   // Ref to track latest selection for SSE live updates
   const selectionRef = useRef({ selectedState, selectedDistrict, selectedTime });
@@ -90,16 +77,16 @@ export function App() {
     try {
       const res = await fetch('/api/weather/metadata');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: WeatherMetadata = await res.json();
+      const data = await res.json();
       setMetadata(data);
       return data;
-    } catch (err: any) {
+    } catch (err) {
       console.warn('Metadata fetch warning:', err.message);
       return null;
     }
   }, []);
 
-  const fetchHistorical = useCallback(async (stName?: string | null, distName?: string | null) => {
+  const fetchHistorical = useCallback(async (stName, distName) => {
     try {
       let url = '/api/weather/historical-series?limit=12';
       if (distName) url += `&district_name=${encodeURIComponent(distName)}`;
@@ -109,15 +96,15 @@ export function App() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setHistoricalTimeline(data.timeline || []);
-    } catch (err: any) {
+    } catch (err) {
       console.warn('Historical series fetch warning:', err.message);
     }
   }, []);
 
-  const fetchOverview = useCallback(async (time?: string | null) => {
+  const fetchOverview = useCallback(async (time) => {
     const cacheKey = time || 'latest';
     if (overviewCacheRef.current.has(cacheKey)) {
-      const cached = overviewCacheRef.current.get(cacheKey)!;
+      const cached = overviewCacheRef.current.get(cacheKey);
       weatherStore.loadSnapshot(
         { state: null, district: null },
         cached.grid_points
@@ -150,7 +137,7 @@ export function App() {
 
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: IndiaOverviewResponse = await res.json();
+      const data = await res.json();
       overviewCacheRef.current.set(cacheKey, data);
       weatherStore.loadSnapshot(
         { state: null, district: null },
@@ -165,7 +152,7 @@ export function App() {
       );
       setOverviewData(data);
       fetchHistorical(null, null);
-    } catch (err: any) {
+    } catch (err) {
       if (err.name === 'AbortError') return;
       console.error('Failed to load India overview:', err);
       setError('Unable to load India weather overview. Please ensure the backend is running.');
@@ -176,10 +163,10 @@ export function App() {
     }
   }, [fetchHistorical]);
 
-  const fetchState = useCallback(async (stateName: string, time?: string | null) => {
+  const fetchState = useCallback(async (stateName, time) => {
     const cacheKey = `${stateName.toLowerCase()}_${time || 'latest'}`;
     if (stateCacheRef.current.has(cacheKey)) {
-      const cached = stateCacheRef.current.get(cacheKey)!;
+      const cached = stateCacheRef.current.get(cacheKey);
       weatherStore.loadSnapshot(
         { state: stateName, district: null },
         cached.observations || [],
@@ -206,7 +193,7 @@ export function App() {
 
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: StateDetailResponse = await res.json();
+      const data = await res.json();
       stateCacheRef.current.set(cacheKey, data);
       weatherStore.loadSnapshot(
         { state: stateName, district: null },
@@ -215,7 +202,7 @@ export function App() {
       );
       setStateData(data);
       fetchHistorical(stateName, null);
-    } catch (err: any) {
+    } catch (err) {
       if (err.name === 'AbortError') return;
       console.error(`Failed to load state ${stateName}:`, err);
       setError(`Unable to load observations for ${stateName}.`);
@@ -226,10 +213,10 @@ export function App() {
     }
   }, [fetchHistorical]);
 
-  const fetchDistrict = useCallback(async (stateName: string, districtName: string, time?: string | null) => {
+  const fetchDistrict = useCallback(async (stateName, districtName, time) => {
     const cacheKey = `${stateName.toLowerCase()}_${districtName.toLowerCase()}_${time || 'latest'}`;
     if (districtCacheRef.current.has(cacheKey)) {
-      const cached = districtCacheRef.current.get(cacheKey)!;
+      const cached = districtCacheRef.current.get(cacheKey);
       weatherStore.loadSnapshot(
         { state: stateName, district: districtName },
         cached.observations || [],
@@ -256,7 +243,7 @@ export function App() {
 
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: DistrictDetailResponse = await res.json();
+      const data = await res.json();
       districtCacheRef.current.set(cacheKey, data);
       weatherStore.loadSnapshot(
         { state: stateName, district: districtName },
@@ -265,7 +252,7 @@ export function App() {
       );
       setDistrictData(data);
       fetchHistorical(stateName, districtName);
-    } catch (err: any) {
+    } catch (err) {
       if (err.name === 'AbortError') return;
       console.error(`Failed to load district ${districtName}:`, err);
       setError(`Unable to load observations for ${districtName}.`);
@@ -343,7 +330,7 @@ export function App() {
     fetchOverview(selectedTime);
   }, [fetchOverview, selectedTime]);
 
-  const handleSelectState = useCallback((stateName: string | null) => {
+  const handleSelectState = useCallback((stateName) => {
     if (!stateName) {
       handleSelectIndia();
       return;
@@ -356,7 +343,7 @@ export function App() {
     fetchState(stateName, selectedTime);
   }, [fetchState, handleSelectIndia, selectedTime]);
 
-  const handleSelectDistrict = useCallback((districtName: string) => {
+  const handleSelectDistrict = useCallback((districtName) => {
     if (!selectedState) return;
     setSelectedDistrict(districtName);
     setLiveSummary(null);
@@ -373,7 +360,7 @@ export function App() {
     fetchState(selectedState, selectedTime);
   }, [fetchState, selectedState, selectedTime]);
 
-  const handleTimeChange = useCallback((time: string) => {
+  const handleTimeChange = useCallback((time) => {
     setSelectedTime(time);
     setLiveSummary(null);
     if (selectedDistrict && selectedState) {

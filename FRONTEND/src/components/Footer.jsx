@@ -1,11 +1,6 @@
 import { TatvaLogo } from './TatvaLogo';
 
-interface FooterProps {
-  onSelectNav: (navId: string) => void;
-  onOpenIncidentReport: () => void;
-}
-
-export function Footer({ onSelectNav, onOpenIncidentReport }: FooterProps) {
+export function Footer({ onSelectNav, onOpenIncidentReport }) {
   return (
     <footer className="w-full bg-[#070e20] text-slate-400 relative overflow-hidden select-none">
       {/* Top Wave Curve Edge */}
