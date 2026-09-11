@@ -12,47 +12,10 @@ import {
   Clock,
   ArrowLeft,
 } from 'lucide-react';
-import type {
-  NationalMetrics,
-  IndiaOverviewResponse,
-  StateDetailResponse,
-  DistrictDetailResponse,
-  WeatherMetadata,
-} from '../types';
 import { INDIA_STATES_DATA } from '../data/weatherData';
 import { WeatherMap } from './WeatherMap';
 import { Breadcrumbs } from './Breadcrumbs';
 import { LoadingOverlay } from './LoadingOverlay';
-import type { ConnectionStatus, WebSocketTelemetry } from '../hooks/useWeatherWebSocket';
-
-interface IndiaMapSectionProps {
-  metrics: NationalMetrics;
-  selectedState: string | null;
-  selectedDistrict: string | null;
-  onSelectState: (stateName: string) => void;
-  onSelectDistrict: (districtName: string) => void;
-  onFitIndia: () => void;
-  onBackToState: () => void;
-  overviewData: IndiaOverviewResponse | null;
-  stateData: StateDetailResponse | null;
-  districtData: DistrictDetailResponse | null;
-  isLoading: boolean;
-  loadingMsg: string;
-  opacity: number;
-  onOpacityChange: (val: number) => void;
-  selectedTime: string | null;
-  onTimeChange: (time: string) => void;
-  metadata: WeatherMetadata | null;
-  wsStatus?: ConnectionStatus;
-  wsTelemetry?: WebSocketTelemetry;
-  liveSummary?: {
-    avg_precipitation: number;
-    max_precipitation: number;
-    min_precipitation: number;
-    total_points: number;
-    rain_category: string;
-  } | null;
-}
 
 export function IndiaMapSection({
   metrics,
@@ -75,7 +38,7 @@ export function IndiaMapSection({
   wsStatus = 'connected',
   wsTelemetry,
   liveSummary,
-}: IndiaMapSectionProps) {
+}) {
   const [showAllStatesModal, setShowAllStatesModal] = useState(false);
   const [showMapControls, setShowMapControls] = useState(false);
 

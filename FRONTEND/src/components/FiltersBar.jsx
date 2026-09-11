@@ -2,15 +2,6 @@ import { useState } from 'react';
 import { Search, MapPin, ChevronDown, Check } from 'lucide-react';
 import { INDIA_STATES_DATA } from '../data/weatherData';
 
-interface FiltersBarProps {
-  searchQuery: string;
-  onSearchChange: (query: string) => void;
-  selectedState: string | null;
-  onSelectState: (state: string | null) => void;
-  regionFilter: string;
-  onRegionChange: (region: string) => void;
-}
-
 export function FiltersBar({
   searchQuery,
   onSearchChange,
@@ -18,7 +9,7 @@ export function FiltersBar({
   onSelectState,
   regionFilter,
   onRegionChange,
-}: FiltersBarProps) {
+}) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [showSearchResults, setShowSearchResults] = useState(false);
 

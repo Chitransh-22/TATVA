@@ -1,13 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import { AlertTriangle, Send, CheckCircle2, MapPin, Camera, X } from 'lucide-react';
 import { INDIA_STATES_DATA } from '../data/weatherData';
 
-interface IncidentModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-}
-
-export function IncidentModal({ isOpen, onClose }: IncidentModalProps) {
+export function IncidentModal({ isOpen, onClose }) {
   const [submitted, setSubmitted] = useState(false);
   const [incidentType, setIncidentType] = useState('flash_flood');
   const [selectedState, setSelectedState] = useState('Uttarakhand');
@@ -17,7 +12,7 @@ export function IncidentModal({ isOpen, onClose }: IncidentModalProps) {
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     setSubmitted(true);
     setTimeout(() => {
@@ -116,7 +111,7 @@ export function IncidentModal({ isOpen, onClose }: IncidentModalProps) {
                   Severity Level
                 </label>
                 <div className="grid grid-cols-3 gap-2">
-                  {(['moderate', 'severe', 'extreme'] as const).map((sev) => (
+                  {['moderate', 'severe', 'extreme'].map((sev) => (
                     <button
                       key={sev}
                       type="button"

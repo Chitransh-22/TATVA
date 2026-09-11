@@ -1,34 +1,3 @@
-import type {
-  IncrementalWeatherPoint,
-  WebSocketBatchMessage,
-} from '../types';
-
-export interface WeatherRecord {
-  id: string;
-  latitude: number;
-  longitude: number;
-  precipitation: number;
-  liquid: number;
-  ice: number;
-  liquid_percent: number;
-  timestamp: string;
-}
-
-export type StoreChangeListener = (event: {
-  scope: { state: string | null; district: string | null };
-  changedIds: string[];
-  removedIds: string[];
-  totalPoints: number;
-}) => void;
-
-export type SummaryChangeListener = (summary: {
-  avg_precipitation: number;
-  max_precipitation: number;
-  min_precipitation: number;
-  total_points: number;
-  rain_category: string;
-}) => void;
-
 /**
  * High-performance, Map-based local weather store.
  *
@@ -37,37 +6,26 @@ export type SummaryChangeListener = (summary: {
  * Out-of-order updates are rejected via ISO timestamp comparisons.
  */
 class WeatherStore {
-  private records: Map<string, WeatherRecord> = new Map();
-  private currentScope: { state: string | null; district: string | null } = {
+  records = new Map();
+  currentScope = {
     state: null,
     district: null,
   };
-  private lastSnapshotTime: string | null = null;
-  private changeListeners: Set<StoreChangeListener> = new Set();
-  private summaryListeners: Set<SummaryChangeListener> = new Set();
+  lastSnapshotTime = null;
+  changeListeners = new Set();
+  summaryListeners = new Set();
 
   /**
    * Generates a stable key for a coordinate point.
    */
-  public makeId(lat: number, lon: number): string {
+  makeId(lat, lon) {
     return `${Number(lat).toFixed(2)}_${Number(lon).toFixed(2)}`;
   }
 
   /**
    * Initialize or replace current data store from an HTTP snapshot.
    */
-  public loadSnapshot(
-    scope: { state: string | null; district: string | null },
-    points: Array<{
-      latitude: number;
-      longitude: number;
-      precipitation: number;
-      liquid?: number;
-      ice?: number;
-      liquid_percent?: number;
-    }>,
-    timestamp?: string
-  ): void {
+  loadSnapshot(scope, points, timestamp) {
     this.currentScope = { ...scope };
     this.lastSnapshotTime = timestamp || new Date().toISOString();
     this.records.clear();
@@ -97,24 +55,19 @@ class WeatherStore {
    * - Updates existing points in place.
    * - Removes expired / dried-up points.
    */
-  public applyBatch(batch: WebSocketBatchMessage): {
-    added: number;
-    updated: number;
-    ignored: number;
-    removed: number;
-  } {
+  applyBatch(batch) {
     let added = 0;
     let updated = 0;
     let ignored = 0;
     let removed = 0;
 
-    const changedIds: string[] = [];
-    const removedIds: string[] = [];
+    const changedIds = [];
+    const removedIds = [];
 
     // 1. Process updates
     if (batch.updates && batch.updates.length > 0) {
       for (let i = 0; i < batch.updates.length; i++) {
-        const u: IncrementalWeatherPoint = batch.updates[i];
+        const u = batch.updates[i];
         const id = u.id || this.makeId(u.lat, u.lon);
         const incomingTime = u.timestamp || batch.timestamp;
 
@@ -183,8 +136,8 @@ class WeatherStore {
   /**
    * Explicit removal of specific point IDs.
    */
-  public removeIds(ids: string[]): void {
-    const actuallyRemoved: string[] = [];
+  removeIds(ids) {
+    const actuallyRemoved = [];
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       if (this.records.delete(id)) {
@@ -199,7 +152,7 @@ class WeatherStore {
   /**
    * Clear all records when switching to a different state or district.
    */
-  public clearScope(newScope: { state: string | null; district: string | null }): void {
+  clearScope(newScope) {
     this.currentScope = { ...newScope };
     const oldIds = Array.from(this.records.keys());
     this.records.clear();
@@ -209,28 +162,28 @@ class WeatherStore {
   /**
    * Get all active records as an array for rendering (e.g. CanvasWeatherLayer).
    */
-  public getRecords(): WeatherRecord[] {
+  getRecords() {
     return Array.from(this.records.values());
   }
 
   /**
    * Get direct Map reference for zero-copy read access.
    */
-  public getRecordsMap(): Map<string, WeatherRecord> {
+  getRecordsMap() {
     return this.records;
   }
 
   /**
    * Total count of active points in store.
    */
-  public get count(): number {
+  get count() {
     return this.records.size;
   }
 
   /**
    * Subscribe to point-level changes (canvas redraw / marker updates).
    */
-  public subscribe(listener: StoreChangeListener): () => void {
+  subscribe(listener) {
     this.changeListeners.add(listener);
     return () => {
       this.changeListeners.delete(listener);
@@ -240,14 +193,14 @@ class WeatherStore {
   /**
    * Subscribe to live summary metric updates (Average Rainfall, Peak Intensity tiles).
    */
-  public subscribeSummary(listener: SummaryChangeListener): () => void {
+  subscribeSummary(listener) {
     this.summaryListeners.add(listener);
     return () => {
       this.summaryListeners.delete(listener);
     };
   }
 
-  private notifyChange(changedIds: string[], removedIds: string[]): void {
+  notifyChange(changedIds, removedIds) {
     const evt = {
       scope: this.currentScope,
       changedIds,
@@ -257,13 +210,7 @@ class WeatherStore {
     this.changeListeners.forEach((fn) => fn(evt));
   }
 
-  private notifySummary(summary: {
-    avg_precipitation: number;
-    max_precipitation: number;
-    min_precipitation: number;
-    total_points: number;
-    rain_category: string;
-  }): void {
+  notifySummary(summary) {
     this.summaryListeners.forEach((fn) => fn(summary));
   }
 }

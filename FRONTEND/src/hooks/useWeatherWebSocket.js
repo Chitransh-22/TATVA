@@ -1,25 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { WebSocketMessage, WebSocketBatchMessage, WebSocketRemoveMessage } from '../types';
 import { weatherStore } from '../data/weatherStore';
 
-export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
-
-export interface WebSocketTelemetry {
-  lastUpdateIst: string | null;
-  lastUpdateIso: string | null;
-  totalBatchesReceived: number;
-  totalPointsUpdated: number;
-  lastBatchPointsCount: number;
-  lastPayloadSizeBytes: number;
-  status: ConnectionStatus;
-}
-
 export function useWeatherWebSocket(
-  selectedState: string | null,
-  selectedDistrict: string | null
+  selectedState,
+  selectedDistrict
 ) {
-  const [status, setStatus] = useState<ConnectionStatus>('connecting');
-  const [telemetry, setTelemetry] = useState<WebSocketTelemetry>({
+  const [status, setStatus] = useState('connecting');
+  const [telemetry, setTelemetry] = useState({
     lastUpdateIst: null,
     lastUpdateIso: null,
     totalBatchesReceived: 0,
@@ -29,11 +16,11 @@ export function useWeatherWebSocket(
     status: 'connecting',
   });
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<any>(null);
-  const pingIntervalRef = useRef<any>(null);
-  const reconnectAttemptRef = useRef<number>(0);
-  const isManuallyClosedRef = useRef<boolean>(false);
+  const wsRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+  const pingIntervalRef = useRef(null);
+  const reconnectAttemptRef = useRef(0);
+  const isManuallyClosedRef = useRef(false);
 
   // Latest subscription parameters in ref to avoid recreating connection
   const activeSubRef = useRef({
@@ -49,7 +36,7 @@ export function useWeatherWebSocket(
   }, [selectedState, selectedDistrict]);
 
   // Send subscription update over the existing connection
-  const sendSubscription = useCallback((state: string | null, district: string | null) => {
+  const sendSubscription = useCallback((state, district) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       const subAction = {
@@ -97,13 +84,13 @@ export function useWeatherWebSocket(
         }, 20000);
       };
 
-      ws.onmessage = (event: MessageEvent) => {
+      ws.onmessage = (event) => {
         try {
-          const payloadSize = event.data ? (event.data as string).length : 0;
-          const msg: WebSocketMessage = JSON.parse(event.data);
+          const payloadSize = event.data ? event.data.length : 0;
+          const msg = JSON.parse(event.data);
 
           if (msg.type === 'weather_batch' || msg.type === 'weather_update') {
-            const batch = msg as WebSocketBatchMessage;
+            const batch = msg;
             const res = weatherStore.applyBatch(batch);
 
             setTelemetry((prev) => ({
@@ -117,7 +104,7 @@ export function useWeatherWebSocket(
               status: 'connected',
             }));
           } else if (msg.type === 'weather_remove') {
-            const rem = msg as WebSocketRemoveMessage;
+            const rem = msg;
             if (rem.ids && rem.ids.length > 0) {
               weatherStore.removeIds(rem.ids);
             }

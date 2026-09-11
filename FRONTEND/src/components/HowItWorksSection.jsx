@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from 'react';
+import { useState } from 'react';
 import {
   Satellite,
   Radio,
@@ -34,7 +34,7 @@ import {
 import { HOW_IT_WORKS_STEPS } from '../data/weatherData';
 
 // Map icon string names to Lucide icons
-const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
+const ICON_MAP = {
   Satellite,
   Radio,
   TowerControl: RadioTower,

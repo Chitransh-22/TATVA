@@ -1,5 +1,3 @@
-import React from 'react';
-
 /**
  * NASA IMERG Standard Color Ramp
  * - < 0.1 mm: Transparent
@@ -11,7 +9,7 @@ import React from 'react';
  * - 50 - 100 mm: Crimson red (#ef4444)
  * - 100+ mm: Magenta / Deep violet (#a855f7 / #7e22ce)
  */
-export function getPrecipitationColor(val: number | null | undefined): string {
+export function getPrecipitationColor(val) {
   if (val === null || val === undefined || val < 0.1) return 'transparent';
   if (val < 2.5) return 'rgba(56, 189, 248, 0.88)';
   if (val < 7.5) return 'rgba(34, 197, 94, 0.90)';
@@ -23,7 +21,7 @@ export function getPrecipitationColor(val: number | null | undefined): string {
   return 'rgba(126, 34, 206, 1.0)';
 }
 
-export function getCategoryBadgeStyle(category: string): { bg: string; text: string; border: string } {
+export function getCategoryBadgeStyle(category) {
   const cat = category.toLowerCase();
   if (cat.includes('extremely') || cat.includes('violent')) {
     return { bg: '#fdf4ff', text: '#7e22ce', border: '#f0abfc' };
@@ -43,7 +41,7 @@ export function getCategoryBadgeStyle(category: string): { bg: string; text: str
   return { bg: '#f8fafc', text: '#64748b', border: '#e2e8f0' };
 }
 
-export const Legend: React.FC = () => {
+export function Legend() {
   return (
     <div className="map-legend" role="region" aria-label="Precipitation Intensity Legend">
       <div className="legend-header">
@@ -64,4 +62,4 @@ export const Legend: React.FC = () => {
       </div>
     </div>
   );
-};
+}

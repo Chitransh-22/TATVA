@@ -1,7 +1,6 @@
-import type { StateWeatherData, NationalMetrics, ProcessStep } from '../types';
 import howItWorksStep1Image from '../assets/images/how_it_works_step1_1789053393170.jpg';
 
-export const NATIONAL_METRICS: NationalMetrics = {
+export const NATIONAL_METRICS = {
   averageRainfall: 27.39,
   peakIntensity: 2212.0,
   peakState: 'Uttarakhand',
@@ -11,7 +10,7 @@ export const NATIONAL_METRICS: NationalMetrics = {
 };
 
 // Accurate geographic coordinate paths for India map viewBox="0 0 800 900"
-export const INDIA_STATES_DATA: StateWeatherData[] = [
+export const INDIA_STATES_DATA = [
   {
     id: 'in-ut',
     name: 'Uttarakhand',
@@ -299,7 +298,7 @@ export const INDIA_STATES_DATA: StateWeatherData[] = [
   },
 ];
 
-export const HOW_IT_WORKS_STEPS: ProcessStep[] = [
+export const HOW_IT_WORKS_STEPS = [
   {
     stepNumber: 1,
     totalSteps: 7,

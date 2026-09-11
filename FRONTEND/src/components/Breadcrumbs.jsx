@@ -1,18 +1,9 @@
-import React from 'react';
-
-interface BreadcrumbsProps {
-  selectedState: string | null;
-  selectedDistrict: string | null;
-  onSelectIndia: () => void;
-  onSelectState: (stateName: string) => void;
-}
-
-export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
+export function Breadcrumbs({
   selectedState,
   selectedDistrict,
   onSelectIndia,
   onSelectState,
-}) => {
+}) {
   return (
     <div className="floating-breadcrumbs" aria-label="Geographic Navigation Trail">
       <div className="breadcrumb-nav">
@@ -58,4 +49,4 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
       </div>
     </div>
   );
-};
+}

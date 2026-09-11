@@ -3,12 +3,8 @@ import { BarChart3, ShieldCheck, Database, Leaf, ArrowRight } from 'lucide-react
 import { TatvaLogo } from './TatvaLogo';
 import heroRainBg from '../assets/images/hero_rain_bg_1789053375931.jpg';
 
-interface HeroSectionProps {
-  onExploreClick: () => void;
-}
-
-export function HeroSection({ onExploreClick }: HeroSectionProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+export function HeroSection({ onExploreClick }) {
+  const canvasRef = useRef(null);
 
   // Animated canvas rainfall simulation
   useEffect(() => {
@@ -17,7 +13,7 @@ export function HeroSection({ onExploreClick }: HeroSectionProps) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    let animationFrameId: number;
+    let animationFrameId;
     let width = (canvas.width = canvas.offsetWidth);
     let height = (canvas.height = canvas.offsetHeight);
 
@@ -31,7 +27,7 @@ export function HeroSection({ onExploreClick }: HeroSectionProps) {
 
     // Generate raindrops
     const rainCount = 140;
-    const drops: { x: number; y: number; l: number; xs: number; ys: number; opacity: number }[] = [];
+    const drops = [];
     for (let i = 0; i < rainCount; i++) {
       drops.push({
         x: Math.random() * width,

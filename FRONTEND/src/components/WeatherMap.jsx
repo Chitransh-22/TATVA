@@ -1,37 +1,16 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import L from 'leaflet';
-import type {
-  IndiaOverviewResponse,
-  StateDetailResponse,
-  DistrictDetailResponse,
-  StateSummary,
-  DistrictSummary,
-} from '../types';
 import { getPrecipitationColor, Legend } from './Legend';
-import type { BasemapOption } from '../types';
 import { weatherStore } from '../data/weatherStore';
 
-interface WeatherMapProps {
-  overviewData: IndiaOverviewResponse | null;
-  stateData: StateDetailResponse | null;
-  districtData: DistrictDetailResponse | null;
-  selectedState: string | null;
-  selectedDistrict: string | null;
-  onSelectState: (stateName: string) => void;
-  onSelectDistrict: (districtName: string) => void;
-  onFitIndia: () => void;
-  opacity: number;
-  basemap?: BasemapOption;
-}
-
-function slugify(text: string): string {
+function slugify(text) {
   return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
 }
 
 // Module-level caches to guarantee boundary GeoJSONs are fetched exactly once
-let cachedIndiaBoundaryGeoJson: any = null;
-let cachedIndiaStatesGeoJson: any = null;
-const cachedDistrictsGeoJsonMap: Record<string, any> = {};
+let cachedIndiaBoundaryGeoJson = null;
+let cachedIndiaStatesGeoJson = null;
+const cachedDistrictsGeoJsonMap = {};
 
 // Immediately initiate background prefetch of official India boundary
 fetch('/data/india_boundary.geojson')
@@ -51,10 +30,10 @@ fetch('/data/india_states.geojson')
 /**
  * Traces a GeoJSON geometry into an HTML5 Canvas 2D Path using Leaflet's latLngToContainerPoint.
  */
-function addGeometryToCanvasPath(ctx: CanvasRenderingContext2D, map: L.Map, geom: any): void {
+function addGeometryToCanvasPath(ctx, map, geom) {
   if (!geom) return;
 
-  const traceRing = (ring: [number, number][]) => {
+  const traceRing = (ring) => {
     if (!ring || ring.length === 0) return;
     for (let p = 0; p < ring.length; p++) {
       const [lon, lat] = ring[p];
@@ -91,7 +70,7 @@ function addGeometryToCanvasPath(ctx: CanvasRenderingContext2D, map: L.Map, geom
   }
 }
 
-export const WeatherMap: React.FC<WeatherMapProps> = ({
+export function WeatherMap({
   overviewData,
   stateData,
   districtData,
@@ -101,24 +80,24 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
   onSelectDistrict,
   onFitIndia,
   opacity,
-}) => {
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<L.Map | null>(null);
+}) {
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
 
   // Direct DOM ref for Inspector Bar (Avoids React re-renders on mouse move!)
-  const inspectorRef = useRef<HTMLDivElement>(null);
+  const inspectorRef = useRef(null);
 
   // Layer references
-  const tileLayerRef = useRef<L.TileLayer | null>(null);
-  const nationalOutlineLayerRef = useRef<L.GeoJSON | null>(null);
-  const statesLayerRef = useRef<L.GeoJSON | null>(null);
-  const districtsLayerRef = useRef<L.GeoJSON | null>(null);
-  const pointsLayerRef = useRef<L.LayerGroup | null>(null);
-  const canvasLayerRef = useRef<any>(null);
-  const canvasRendererRef = useRef<L.Canvas | null>(null);
+  const tileLayerRef = useRef(null);
+  const nationalOutlineLayerRef = useRef(null);
+  const statesLayerRef = useRef(null);
+  const districtsLayerRef = useRef(null);
+  const pointsLayerRef = useRef(null);
+  const canvasLayerRef = useRef(null);
+  const canvasRendererRef = useRef(null);
 
   // Track previous selection for camera transitions
-  const prevSelectionRef = useRef<{ state: string | null; district: string | null }>({
+  const prevSelectionRef = useRef({
     state: null,
     district: null,
   });
@@ -142,7 +121,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
   };
 
   // Helper to update inspector DOM directly (0ms, 0 React renders)
-  const updateInspector = useCallback((name: string, lat: number, lon: number, precip: number | null) => {
+  const updateInspector = useCallback((name, lat, lon, precip) => {
     if (!inspectorRef.current) return;
     const pStr = precip !== null ? `${precip.toFixed(1)} mm/hr` : '0.0 mm/hr';
     inspectorRef.current.innerHTML = `
@@ -268,8 +247,8 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       canvasLayerRef.current = null;
     }
 
-    const CanvasWeatherLayer = (L.Layer as any).extend({
-      onAdd: function (leafletMap: L.Map) {
+    const CanvasWeatherLayer = L.Layer.extend({
+      onAdd: function (leafletMap) {
         this._map = leafletMap;
         if (!this._canvas) {
           this._canvas = L.DomUtil.create('canvas', 'leaflet-weather-canvas-layer');
@@ -286,7 +265,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
         this._draw();
       },
 
-      onRemove: function (leafletMap: L.Map) {
+      onRemove: function (leafletMap) {
         if (this._canvas && this._canvas.parentNode) {
           this._canvas.parentNode.removeChild(this._canvas);
         }
@@ -295,7 +274,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
 
       _draw: function () {
         if (!this._map || !this._canvas) return;
-        const ctx: CanvasRenderingContext2D | null = this._canvas.getContext('2d');
+        const ctx = this._canvas.getContext('2d');
         if (!ctx) return;
 
         const size = this._map.getSize();
@@ -326,13 +305,13 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
         // -------------------------------------------------------------
         // STRICT BOUNDARY CLIPPING TO INDIA / STATE / DISTRICT
         // -------------------------------------------------------------
-        let clipGeometry: any = null;
+        let clipGeometry = null;
 
         if (curDist && curState) {
           const stateSlug = slugify(curState);
           const districtGeoJson = cachedDistrictsGeoJsonMap[stateSlug];
           if (districtGeoJson?.features) {
-            const feat = districtGeoJson.features.find((f: any) => {
+            const feat = districtGeoJson.features.find((f) => {
               const name = f?.properties?.NAME_2 || f?.properties?.DISTRICT || '';
               return name.toLowerCase() === curDist.toLowerCase();
             });
@@ -342,7 +321,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
 
         if (!clipGeometry && curState) {
           if (cachedIndiaStatesGeoJson?.features) {
-            const feat = cachedIndiaStatesGeoJson.features.find((f: any) => {
+            const feat = cachedIndiaStatesGeoJson.features.find((f) => {
               const name = f?.properties?.ST_NM || '';
               return name.toLowerCase() === curState.toLowerCase();
             });
@@ -488,7 +467,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
 
   // Trigger throttled canvas redraw whenever data changes or WebSocket increments arrive
   useEffect(() => {
-    let animFrame: number | null = null;
+    let animFrame = null;
     const requestRedraw = () => {
       if (animFrame) return;
       animFrame = requestAnimationFrame(() => {
@@ -524,14 +503,14 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       statesLayerRef.current = null;
     }
 
-    const stateSummaryMap = new Map<string, StateSummary>();
+    const stateSummaryMap = new Map();
     if (overviewData?.state_summaries) {
       for (const s of overviewData.state_summaries) {
         stateSummaryMap.set(s.state_name.toLowerCase(), s);
       }
     }
 
-    const initStates = (geojson: any) => {
+    const initStates = (geojson) => {
       if (!mapRef.current) return;
 
       const defaultBorderColor = '#475569';
@@ -608,7 +587,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
             click: () => {
               onSelectState(stName);
               if (mapRef.current) {
-                mapRef.current.fitBounds((l as any).getBounds(), {
+                mapRef.current.fitBounds(l.getBounds(), {
                   padding: [30, 30],
                   animate: true,
                   duration: 0.8,
@@ -650,14 +629,14 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     if (!selectedState) return;
 
     const stateSlug = slugify(selectedState);
-    const districtSummaryMap = new Map<string, DistrictSummary>();
+    const districtSummaryMap = new Map();
     if (stateData?.district_summaries) {
       for (const d of stateData.district_summaries) {
         districtSummaryMap.set(d.district_name.toLowerCase(), d);
       }
     }
 
-    const initDistricts = (geojson: any) => {
+    const initDistricts = (geojson) => {
       if (!mapRef.current || !selectedState) return;
 
       const defaultBorderColor = '#64748b';
@@ -734,7 +713,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
             click: () => {
               onSelectDistrict(distName);
               if (mapRef.current) {
-                mapRef.current.fitBounds((l as any).getBounds(), {
+                mapRef.current.fitBounds(l.getBounds(), {
                   padding: [30, 30],
                   animate: true,
                   duration: 0.8,
@@ -774,7 +753,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
   // ---------------------------------------------------------------------------
   // 6. District Observation Markers (In-Place Incremental Canvas Markers)
   // ---------------------------------------------------------------------------
-  const districtMarkersMapRef = useRef<Map<string, L.CircleMarker>>(new Map());
+  const districtMarkersMapRef = useRef(new Map());
 
   useEffect(() => {
     const pointsGroup = pointsLayerRef.current;
@@ -782,13 +761,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     if (!pointsGroup || !canvasRenderer) return;
 
     // Helper to render or update a single marker in place
-    const upsertMarker = (pt: {
-      latitude: number;
-      longitude: number;
-      precipitation: number;
-      liquid: number;
-      ice: number;
-    }, id: string) => {
+    const upsertMarker = (pt, id) => {
       const color = getPrecipitationColor(pt.precipitation);
       const radius = Math.min(6, Math.max(3, Math.sqrt(pt.precipitation + 1) * 1.4));
       const tooltipContent = `<div class="weather-map-tooltip">
@@ -804,7 +777,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
 
       if (districtMarkersMapRef.current.has(id)) {
         // IN-PLACE UPDATE (0 DOM nodes, 0 Leaflet layer additions)
-        const marker = districtMarkersMapRef.current.get(id)!;
+        const marker = districtMarkersMapRef.current.get(id);
         marker.setStyle({ fillColor: color, radius: radius });
         marker.setTooltipContent(tooltipContent);
       } else {
@@ -901,7 +874,7 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
     if (prev.state && !selectedState) {
       map.setView([22.8, 82.0], 5, { animate: true, duration: 0.8 });
     } else if (prev.district && !selectedDistrict && selectedState && statesLayerRef.current) {
-      statesLayerRef.current.eachLayer((layer: any) => {
+      statesLayerRef.current.eachLayer((layer) => {
         const name = layer.feature?.properties?.ST_NM;
         if (name && name.toLowerCase() === selectedState.toLowerCase()) {
           map.fitBounds(layer.getBounds(), { padding: [30, 30], animate: true, duration: 0.8 });
@@ -984,4 +957,4 @@ export const WeatherMap: React.FC<WeatherMapProps> = ({
       </div>
     </div>
   );
-};
+}
