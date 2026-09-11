@@ -43,78 +43,79 @@ export function IndiaMapSection({
   const [showMapControls, setShowMapControls] = useState(false);
 
   // Compute live national/state/district metrics prioritizing live WebSocket summary
-  const activeAvgRainfall = liveSummary
-    ? liveSummary.avg_precipitation.toFixed(2)
-    : overviewData?.national_summary
-    ? overviewData.national_summary.avg_precipitation.toFixed(2)
-    : metrics.averageRainfall.toString();
+  const activeAvgRainfall = (liveSummary?.avg_precipitation != null)
+    ? Number(liveSummary.avg_precipitation).toFixed(2)
+    : (overviewData?.national_summary?.avg_precipitation != null)
+    ? Number(overviewData.national_summary.avg_precipitation).toFixed(2)
+    : Number(metrics?.averageRainfall ?? 0).toFixed(2);
 
-  const activePeakIntensity = liveSummary
-    ? liveSummary.max_precipitation.toFixed(1)
-    : overviewData?.national_summary
-    ? overviewData.national_summary.max_precipitation.toFixed(1)
-    : metrics.peakIntensity.toString();
+  const activePeakIntensity = (liveSummary?.max_precipitation != null)
+    ? Number(liveSummary.max_precipitation).toFixed(1)
+    : (overviewData?.national_summary?.max_precipitation != null)
+    ? Number(overviewData.national_summary.max_precipitation).toFixed(1)
+    : Number(metrics?.peakIntensity ?? 0).toFixed(1);
 
-  const activeObservations = liveSummary
-    ? liveSummary.total_points.toLocaleString()
-    : overviewData?.national_summary
-    ? overviewData.national_summary.total_points.toLocaleString()
-    : metrics.totalObservations.toLocaleString();
+  const activeObservations = (liveSummary?.total_points != null)
+    ? Number(liveSummary.total_points).toLocaleString()
+    : (overviewData?.national_summary?.total_points != null)
+    ? Number(overviewData.national_summary.total_points).toLocaleString()
+    : Number(metrics?.totalObservations ?? 0).toLocaleString();
 
-  const activeDominantCategory = liveSummary
-    ? liveSummary.rain_category
-    : overviewData?.national_summary
-    ? overviewData.national_summary.rain_category
-    : metrics.dominantCategory;
+  const activeDominantCategory = liveSummary?.rain_category
+    || overviewData?.national_summary?.rain_category
+    || metrics?.dominantCategory
+    || 'Clear / Dry';
 
   const activeTimestamp = wsTelemetry?.lastUpdateIst
     ? `${wsTelemetry.lastUpdateIst} (Live WS)`
+    : overviewData?.observation_ist
+    ? overviewData.observation_ist
     : metadata?.latest_observation_ist
     ? metadata.latest_observation_ist
-    : metrics.timestamp;
+    : metrics?.timestamp || 'Live Active Dataset';
 
   // Real top states from overviewData, or fallback to mock data
   const topStatesList = overviewData?.state_summaries && overviewData.state_summaries.length > 0
     ? [...overviewData.state_summaries]
-        .sort((a, b) => b.max_precipitation - a.max_precipitation)
+        .sort((a, b) => Number(b?.max_precipitation ?? 0) - Number(a?.max_precipitation ?? 0))
         .slice(0, 5)
         .map((s, idx) => ({
           rank: idx + 1,
-          id: s.state_name,
-          name: s.state_name,
-          rainfall: s.max_precipitation,
-          category: s.rain_category,
+          id: s?.state_name || `state-${idx}`,
+          name: s?.state_name || 'Unknown',
+          rainfall: Number(s?.max_precipitation ?? 0),
+          category: s?.rain_category || 'Clear / Dry',
         }))
     : [...INDIA_STATES_DATA]
-        .sort((a, b) => b.rainfall - a.rainfall)
+        .sort((a, b) => Number(b?.rainfall ?? 0) - Number(a?.rainfall ?? 0))
         .slice(0, 5)
         .map((s, idx) => ({
           rank: idx + 1,
           id: s.name,
           name: s.name,
-          rainfall: s.rainfall,
-          category: s.category,
+          rainfall: Number(s.rainfall ?? 0),
+          category: s.category || 'Clear / Dry',
         }));
 
   // All states list for modal
   const allStatesList = overviewData?.state_summaries && overviewData.state_summaries.length > 0
     ? [...overviewData.state_summaries]
-        .sort((a, b) => b.max_precipitation - a.max_precipitation)
+        .sort((a, b) => Number(b?.max_precipitation ?? 0) - Number(a?.max_precipitation ?? 0))
         .map((s, idx) => ({
           rank: idx + 1,
-          name: s.state_name,
-          rainfall: s.max_precipitation,
-          category: s.rain_category,
-          stationCount: s.total_points,
+          name: s?.state_name || 'Unknown',
+          rainfall: Number(s?.max_precipitation ?? 0),
+          category: s?.rain_category || 'Clear / Dry',
+          stationCount: Number(s?.total_points ?? 0),
         }))
     : [...INDIA_STATES_DATA]
-        .sort((a, b) => b.rainfall - a.rainfall)
+        .sort((a, b) => Number(b?.rainfall ?? 0) - Number(a?.rainfall ?? 0))
         .map((s, idx) => ({
           rank: idx + 1,
           name: s.name,
-          rainfall: s.rainfall,
-          category: s.category,
-          stationCount: s.stationCount,
+          rainfall: Number(s.rainfall ?? 0),
+          category: s.category || 'Clear / Dry',
+          stationCount: Number(s.stationCount ?? 0),
         }));
 
   // Districts list for active state
@@ -310,10 +311,10 @@ export function IndiaMapSection({
               </div>
               <div className="flex items-baseline gap-1">
                 <span className="text-xl sm:text-2xl font-extrabold text-slate-900">
-                  {selectedDistrict && districtData?.district_summary
-                    ? districtData.district_summary.avg_precipitation.toFixed(2)
-                    : selectedState && stateData?.state_summary
-                    ? stateData.state_summary.avg_precipitation.toFixed(2)
+                  {selectedDistrict && districtData?.district_summary?.avg_precipitation != null
+                    ? Number(districtData.district_summary.avg_precipitation).toFixed(2)
+                    : selectedState && stateData?.state_summary?.avg_precipitation != null
+                    ? Number(stateData.state_summary.avg_precipitation).toFixed(2)
                     : activeAvgRainfall}
                 </span>
                 <span className="text-xs font-semibold text-slate-400">mm/hr</span>
@@ -328,10 +329,10 @@ export function IndiaMapSection({
               </div>
               <div className="flex items-baseline gap-1">
                 <span className="text-xl sm:text-2xl font-extrabold text-slate-900">
-                  {selectedDistrict && districtData?.district_summary
-                    ? districtData.district_summary.max_precipitation.toFixed(1)
-                    : selectedState && stateData?.state_summary
-                    ? stateData.state_summary.max_precipitation.toFixed(1)
+                  {selectedDistrict && districtData?.district_summary?.max_precipitation != null
+                    ? Number(districtData.district_summary.max_precipitation).toFixed(1)
+                    : selectedState && stateData?.state_summary?.max_precipitation != null
+                    ? Number(stateData.state_summary.max_precipitation).toFixed(1)
                     : activePeakIntensity}
                 </span>
                 <span className="text-xs font-semibold text-slate-400">mm/hr</span>
@@ -345,10 +346,10 @@ export function IndiaMapSection({
                 <span className="text-[11px] font-medium">Observations</span>
               </div>
               <div className="text-xl sm:text-2xl font-extrabold text-slate-900">
-                {selectedDistrict && districtData?.district_summary
-                  ? districtData.district_summary.total_points.toLocaleString()
-                  : selectedState && stateData?.state_summary
-                  ? stateData.state_summary.total_points.toLocaleString()
+                {selectedDistrict && districtData?.district_summary?.total_points != null
+                  ? Number(districtData.district_summary.total_points).toLocaleString()
+                  : selectedState && stateData?.state_summary?.total_points != null
+                  ? Number(stateData.state_summary.total_points).toLocaleString()
                   : activeObservations}
               </div>
             </div>
@@ -360,9 +361,9 @@ export function IndiaMapSection({
                 <span className="text-[11px] font-medium">Rain Category</span>
               </div>
               <div className="text-xs font-bold text-red-600 leading-tight">
-                {selectedDistrict && districtData?.district_summary
+                {selectedDistrict && districtData?.district_summary?.rain_category
                   ? districtData.district_summary.rain_category
-                  : selectedState && stateData?.state_summary
+                  : selectedState && stateData?.state_summary?.rain_category
                   ? stateData.state_summary.rain_category
                   : activeDominantCategory}
               </div>
@@ -409,7 +410,7 @@ export function IndiaMapSection({
                       </div>
                       <div className="text-right">
                         <span className="text-xs sm:text-sm font-bold text-blue-600">
-                          {dist.max_precipitation.toFixed(1)}
+                          {Number(dist?.max_precipitation ?? 0).toFixed(1)}
                         </span>
                         <span className="text-[11px] text-slate-400 font-medium ml-1">
                           mm/hr
@@ -465,7 +466,7 @@ export function IndiaMapSection({
                       </div>
                       <div className="text-right">
                         <span className="text-xs sm:text-sm font-bold text-blue-600">
-                          {state.rainfall.toFixed(1)}
+                          {Number(state?.rainfall ?? 0).toFixed(1)}
                         </span>
                         <span className="text-[11px] text-slate-400 font-medium ml-1">
                           mm/hr
@@ -532,11 +533,11 @@ export function IndiaMapSection({
                   </div>
                   <div className="text-right">
                     <span className="text-sm font-bold text-blue-600">
-                      {state.rainfall.toFixed(1)} mm/hr
+                      {Number(state?.rainfall ?? 0).toFixed(1)} mm/hr
                     </span>
-                    {state.stationCount && (
+                    {state?.stationCount != null && (
                       <div className="text-[11px] text-slate-400">
-                        {state.stationCount.toLocaleString()} observations
+                        {Number(state.stationCount).toLocaleString()} observations
                       </div>
                     )}
                   </div>

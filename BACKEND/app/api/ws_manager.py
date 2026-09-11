@@ -70,21 +70,14 @@ class WeatherWebSocketManager:
         self._version_counter: int = 1000
 
     async def start(self):
-        """Start background broadcast worker."""
+        """Start WebSocket manager."""
         if not self._running:
             self._running = True
-            self._bg_task = asyncio.create_task(self._incremental_background_loop())
-            logger.info("WeatherWebSocketManager background worker started.")
+            logger.info("WeatherWebSocketManager started (event-driven broadcast mode).")
 
     async def stop(self):
-        """Stop background worker and disconnect all clients cleanly."""
+        """Stop manager and disconnect all clients cleanly."""
         self._running = False
-        if self._bg_task:
-            self._bg_task.cancel()
-            try:
-                await self._bg_task
-            except asyncio.CancelledError:
-                pass
         # Close all active sockets
         async with self._lock:
             for sub in list(self._clients.values()):
@@ -210,6 +203,7 @@ class WeatherWebSocketManager:
 
         payload = {
             "type": "weather_batch",
+            "action": "upsert",
             "version": self._version_counter,
             "timestamp": ts.isoformat(),
             "timestamp_ist": _to_ist_str(ts),
@@ -251,6 +245,7 @@ class WeatherWebSocketManager:
         ts = timestamp or datetime.now(timezone.utc)
         payload = json.dumps({
             "type": "weather_remove",
+            "action": "remove",
             "timestamp": ts.isoformat(),
             "ids": ids,
             "state": target_state,
@@ -269,188 +264,48 @@ class WeatherWebSocketManager:
             except asyncio.QueueFull:
                 pass
 
-    async def _incremental_background_loop(self):
-        """Periodic background task that generates realistic incremental real-time radar sweeps.
-        
-        Only sends small batches (5-20 points) to currently active subscribers.
-        Zero database overload, zero client freezing!
-        """
-        import random
-        # Seed initial cycle
-        await asyncio.sleep(4)
+    async def broadcast_event(
+        self,
+        event_type: str = "weather_update",
+        action: str = "upsert",
+        point_id: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+        target_state: Optional[str] = None,
+        target_district: Optional[str] = None,
+        timestamp: Optional[datetime] = None,
+    ):
+        """Broadcast a single incremental weather event."""
+        if not self._clients:
+            return
 
-        while self._running:
+        ts = timestamp or datetime.now(timezone.utc)
+        self._version_counter += 1
+
+        payload = {
+            "type": event_type,
+            "action": action,
+            "version": self._version_counter,
+            "id": point_id or (data.get("id") if data else None),
+            "timestamp": ts.isoformat(),
+            "timestamp_ist": _to_ist_str(ts),
+            "state": target_state,
+            "district": target_district,
+            "data": data or {},
+        }
+        encoded = json.dumps(payload)
+
+        async with self._lock:
+            targets = [
+                sub for sub in self._clients.values()
+                if sub.matches(target_state, target_district)
+            ]
+
+        for sub in targets:
             try:
-                await asyncio.sleep(6)  # 6-second incremental batch interval
+                sub.message_queue.put_nowait(encoded)
+            except asyncio.QueueFull:
+                logger.warning(f"Queue full for client {sub.client_id}; dropping message")
 
-                async with self._lock:
-                    active_count = len(self._clients)
-                    active_subs = list(self._clients.values())
-
-                if active_count == 0:
-                    continue
-
-                now_utc = datetime.now(timezone.utc)
-                now_iso = now_utc.isoformat()
-
-                # Group subscribers by (state, district) to batch updates efficiently
-                groups: Dict[tuple, List[ClientSubscription]] = {}
-                for s in active_subs:
-                    key = (s.state, s.district)
-                    groups.setdefault(key, []).append(s)
-
-                for (state, district), _ in groups.items():
-                    # 1. District Incremental Sweep (e.g. Ahmedabad, Surat, Pune)
-                    if district and state:
-                        is_ahmedabad = "ahmad" in district.lower() or "ahmed" in district.lower()
-                        center_lat = 23.02 if is_ahmedabad else 21.17
-                        center_lon = 72.57 if is_ahmedabad else 72.83
-
-                        num_pts = random.randint(3, 7)
-                        updates = []
-                        removals = []
-
-                        for _ in range(num_pts):
-                            dlat = round(center_lat + random.uniform(-0.15, 0.15), 2)
-                            dlon = round(center_lon + random.uniform(-0.15, 0.15), 2)
-                            precip = round(random.uniform(1.2, 38.5), 1)
-                            pt_id = f"{dlat:.2f}_{dlon:.2f}"
-                            updates.append({
-                                "id": pt_id,
-                                "lat": dlat,
-                                "lon": dlon,
-                                "value": precip,
-                                "precipitation": precip,
-                                "liquid": precip,
-                                "ice": round(precip * 0.08, 1),
-                                "liquid_percent": 92.0,
-                                "timestamp": now_iso,
-                            })
-
-                        # Randomly expire 1-2 points that dried up
-                        if random.random() > 0.4:
-                            rem_lat = round(center_lat + random.uniform(-0.18, 0.18), 2)
-                            rem_lon = round(center_lon + random.uniform(-0.18, 0.18), 2)
-                            removals.append(f"{rem_lat:.2f}_{rem_lon:.2f}")
-
-                        max_p = max(p["value"] for p in updates)
-                        summary = {
-                            "avg_precipitation": round(sum(p["value"] for p in updates) / len(updates), 2),
-                            "max_precipitation": max_p,
-                            "min_precipitation": min(p["value"] for p in updates),
-                            "total_points": len(updates) + 40,
-                            "rain_category": "Heavy Rainfall" if max_p > 30 else "Moderate Rain",
-                        }
-
-                        await self.broadcast_batch(
-                            updates=updates,
-                            removals=removals,
-                            summary=summary,
-                            target_state=state,
-                            target_district=district,
-                            timestamp=now_utc,
-                        )
-
-                    # 2. State Incremental Sweep (e.g. Gujarat, Maharashtra, Rajasthan)
-                    elif state:
-                        if "gujarat" in state.lower():
-                            c_lat, c_lon = 22.5, 71.8
-                        elif "maharashtra" in state.lower():
-                            c_lat, c_lon = 19.5, 75.5
-                        elif "rajasthan" in state.lower():
-                            c_lat, c_lon = 26.5, 73.8
-                        else:
-                            c_lat, c_lon = 22.0, 78.0
-
-                        num_pts = random.randint(5, 12)
-                        updates = []
-                        removals = []
-
-                        for _ in range(num_pts):
-                            slat = round(c_lat + random.uniform(-1.8, 1.8), 2)
-                            slon = round(c_lon + random.uniform(-1.8, 1.8), 2)
-                            precip = round(random.uniform(0.8, 45.0), 1)
-                            pt_id = f"{slat:.2f}_{slon:.2f}"
-                            updates.append({
-                                "id": pt_id,
-                                "lat": slat,
-                                "lon": slon,
-                                "value": precip,
-                                "precipitation": precip,
-                                "liquid": precip,
-                                "ice": 0.0,
-                                "liquid_percent": 100.0,
-                                "timestamp": now_iso,
-                            })
-
-                        if random.random() > 0.5:
-                            rlat = round(c_lat + random.uniform(-2.0, 2.0), 2)
-                            rlon = round(c_lon + random.uniform(-2.0, 2.0), 2)
-                            removals.append(f"{rlat:.2f}_{rlon:.2f}")
-
-                        max_p = max(p["value"] for p in updates)
-                        summary = {
-                            "avg_precipitation": round(sum(p["value"] for p in updates) / len(updates), 2),
-                            "max_precipitation": max_p,
-                            "min_precipitation": 0.0,
-                            "total_points": len(updates) + 120,
-                            "rain_category": "Very Heavy Torrential Downpour" if max_p > 40 else "Moderate Rain",
-                        }
-
-                        await self.broadcast_batch(
-                            updates=updates,
-                            removals=removals,
-                            summary=summary,
-                            target_state=state,
-                            target_district=None,
-                            timestamp=now_utc,
-                        )
-
-                    # 3. National Overview Incremental Sweep
-                    else:
-                        num_pts = random.randint(8, 18)
-                        updates = []
-                        removals = []
-
-                        for _ in range(num_pts):
-                            nlat = round(random.uniform(10.0, 32.0), 2)
-                            nlon = round(random.uniform(70.0, 88.0), 2)
-                            precip = round(random.uniform(0.5, 55.0), 1)
-                            pt_id = f"{nlat:.2f}_{nlon:.2f}"
-                            updates.append({
-                                "id": pt_id,
-                                "lat": nlat,
-                                "lon": nlon,
-                                "value": precip,
-                                "precipitation": precip,
-                                "timestamp": now_iso,
-                            })
-
-                        if random.random() > 0.5:
-                            rlat = round(random.uniform(10.0, 32.0), 2)
-                            rlon = round(random.uniform(70.0, 88.0), 2)
-                            removals.append(f"{rlat:.2f}_{rlon:.2f}")
-
-                        await self.broadcast_batch(
-                            updates=updates,
-                            removals=removals,
-                            summary={
-                                "avg_precipitation": 3.85,
-                                "max_precipitation": 58.2,
-                                "min_precipitation": 0.0,
-                                "total_points": 3450,
-                                "rain_category": "Moderate Rain",
-                            },
-                            target_state=None,
-                            target_district=None,
-                            timestamp=now_utc,
-                        )
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in incremental background cycle: {e}", exc_info=True)
-                await asyncio.sleep(5)
 
 
 # Global singleton instance

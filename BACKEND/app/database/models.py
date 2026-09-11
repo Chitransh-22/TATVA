@@ -64,6 +64,8 @@ class PrecipitationObservationStaging(Base):
     num_valid_half_hour = Column(Integer, nullable=True)
     source = Column(String(64), nullable=False, default="NASA")
     product = Column(String(64), nullable=False, default="IMERG")
+    state = Column(String(128), nullable=True)
+    district = Column(String(128), nullable=True)
 
 
 class PrecipitationObservation(Base):
@@ -82,11 +84,14 @@ class PrecipitationObservation(Base):
     num_valid_half_hour = Column(Integer, nullable=True)
     source = Column(String(64), nullable=False, default="NASA")
     product = Column(String(64), nullable=False, default="IMERG")
+    state = Column(String(128), nullable=True, index=True)
+    district = Column(String(128), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     __table_args__ = (
         PrimaryKeyConstraint("observation_time", "granule_id", "latitude", "longitude"),
         Index("idx_precip_obs_time_coords", "observation_time", "latitude", "longitude"),
+        Index("idx_precip_obs_state_district", "state", "district"),
     )
 
 

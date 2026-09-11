@@ -282,71 +282,94 @@ async def _execute_nasa_imerg_pipeline_run(
                     continue
 
                 # 5. Extract NASA IMERG ZIP layers
-                await dedup_ledger.update_status(granule_id, status="EXTRACTING")
-                layers = await asyncio.to_thread(granule_extractor.extract_zip, str(local_path), granule_id)
-                if not layers:
-                    err = f"Failed to extract GeoTIFF layers from ZIP for {granule_id}"
-                    logger.error(f"[NASA IMERG Run {run_id}] {err}")
-                    run.failed_count += 1
-                    run.errors.append(err)
-                    await dedup_ledger.update_status(granule_id, status="FAILED", error_message=err)
-                    continue
-                await dedup_ledger.update_status(granule_id, status="EXTRACTED")
-
-                # 6 & 7. Affine Transform Converter -> Standardized/Clipped CSV
-                await dedup_ledger.update_status(granule_id, status="TRANSFORMING")
+                from app.ingestion.pipeline import pipeline_service
+                pipeline_service._active_processing.add(granule_id)
                 try:
-                    summary = await asyncio.to_thread(
-                        convert_imerg_to_standard_csv,
-                        files=layers,
+                    await dedup_ledger.update_status(granule_id, status="EXTRACTING")
+                    layers = await asyncio.to_thread(granule_extractor.extract_zip, str(local_path), granule_id)
+                    if not layers:
+                        err = f"Failed to extract GeoTIFF layers from ZIP for {granule_id}"
+                        logger.error(f"[NASA IMERG Run {run_id}] {err}")
+                        run.failed_count += 1
+                        run.errors.append(err)
+                        await dedup_ledger.update_status(granule_id, status="FAILED", error_message=err)
+                        continue
+                    await dedup_ledger.update_status(granule_id, status="EXTRACTED")
+
+                    # 6 & 7. Affine Transform Converter -> Standardized/Clipped CSV
+                    await dedup_ledger.update_status(granule_id, status="TRANSFORMING")
+                    try:
+                        summary = await asyncio.to_thread(
+                            convert_imerg_to_standard_csv,
+                            files=layers,
+                            granule_id=granule_id,
+                            observation_time=granule.observation_time,
+                            clip_to_india=settings.CLIP_TO_INDIA,
+                        )
+                        transformed_csv = Path(summary["output_file"])
+                        row_count = summary["row_count"]
+                        run.transformed_count += 1
+                    except Exception as e:
+                        err = f"Transformation error for granule {granule_id}: {str(e)}"
+                        logger.error(f"[NASA IMERG Run {run_id}] {err}")
+                        run.failed_count += 1
+                        run.errors.append(err)
+                        await dedup_ledger.update_status(granule_id, status="FAILED", error_message=err)
+                        continue
+
+                    # 8 & 11. Validate CSV and send failures to DLQ
+                    is_valid = await granule_validator.handle_transformed_file(
+                        csv_path=transformed_csv,
                         granule_id=granule_id,
                         observation_time=granule.observation_time,
-                        clip_to_india=settings.CLIP_TO_INDIA,
+                        row_count=row_count,
                     )
-                    transformed_csv = Path(summary["output_file"])
-                    row_count = summary["row_count"]
-                    run.transformed_count += 1
-                except Exception as e:
-                    err = f"Transformation error for granule {granule_id}: {str(e)}"
-                    logger.error(f"[NASA IMERG Run {run_id}] {err}")
-                    run.failed_count += 1
-                    run.errors.append(err)
-                    await dedup_ledger.update_status(granule_id, status="FAILED", error_message=err)
-                    continue
+                    if not is_valid:
+                        err = f"Validation failed for granule {granule_id} (routed to DLQ)"
+                        logger.warning(f"[NASA IMERG Run {run_id}] {err}")
+                        run.failed_count += 1
+                        run.errors.append(err)
+                        continue
+                    run.validated_count += 1
 
-                # 8 & 11. Validate CSV and send failures to DLQ
-                is_valid = await granule_validator.handle_transformed_file(
-                    csv_path=transformed_csv,
-                    granule_id=granule_id,
-                    observation_time=granule.observation_time,
-                    row_count=row_count,
-                )
-                if not is_valid:
-                    err = f"Validation failed for granule {granule_id} (routed to DLQ)"
-                    logger.warning(f"[NASA IMERG Run {run_id}] {err}")
-                    run.failed_count += 1
-                    run.errors.append(err)
-                    continue
-                run.validated_count += 1
+                    # 9 & 10. Bulk COPY load into PostgreSQL/PostGIS & ledger update
+                    loaded = await bulk_loader.load_csv(
+                        csv_path=transformed_csv,
+                        granule_id=granule_id,
+                        observation_time=granule.observation_time,
+                    )
+                    if loaded:
+                        run.loaded_count += 1
+                        await dedup_ledger.update_status(granule_id, status="PERSISTED")
+                        await dedup_ledger.update_status(granule_id, status="COMPLETED")
+                        try:
+                            await analytics_aggregator.compute_rollups_for_observation(granule.observation_time)
+                            await analytics_aggregator.detect_anomalies_for_granule(granule_id, granule.observation_time)
+                        except Exception as ex:
+                            logger.warning(f"[NASA IMERG Run {run_id}] Analytics aggregation notice for {granule_id}: {ex}")
 
-                # 9 & 10. Bulk COPY load into PostgreSQL/PostGIS & ledger update
-                loaded = await bulk_loader.load_csv(
-                    csv_path=transformed_csv,
-                    granule_id=granule_id,
-                    observation_time=granule.observation_time,
-                )
-                if loaded:
-                    run.loaded_count += 1
-                    try:
-                        await analytics_aggregator.compute_rollups_for_observation(granule.observation_time)
-                        await analytics_aggregator.detect_anomalies_for_granule(granule_id, granule.observation_time)
-                    except Exception as ex:
-                        logger.warning(f"[NASA IMERG Run {run_id}] Analytics aggregation notice for {granule_id}: {ex}")
-                else:
-                    err = f"Bulk loading failed for granule {granule_id}"
-                    logger.error(f"[NASA IMERG Run {run_id}] {err}")
-                    run.failed_count += 1
-                    run.errors.append(err)
+                        try:
+                            from app.api.broadcaster import weather_broadcaster
+                            await weather_broadcaster.broadcast("new_granule", {
+                                "granule_id": granule_id,
+                                "observation_time": granule.observation_time.isoformat(),
+                                "status": "COMPLETED"
+                            })
+                        except Exception as b_err:
+                            logger.debug(f"SSE broadcast notice skipped: {b_err}")
+
+                        try:
+                            from app.ingestion.pipeline import pipeline_service
+                            await pipeline_service._broadcast_granule_websocket(transformed_csv, granule_id, granule.observation_time)
+                        except Exception as ws_err:
+                            logger.debug(f"WebSocket broadcast error in IMERG run: {ws_err}")
+                    else:
+                        err = f"Bulk loading failed for granule {granule_id}"
+                        logger.error(f"[NASA IMERG Run {run_id}] {err}")
+                        run.failed_count += 1
+                        run.errors.append(err)
+                finally:
+                    pipeline_service._active_processing.discard(granule_id)
 
             except Exception as item_ex:
                 err = f"Error processing granule {granule_id}: {str(item_ex)}"
@@ -476,9 +499,9 @@ async def get_ingestion_status() -> Dict[str, Any]:
     summary="Trigger General Ingestion Cycle",
     description="Trigger an immediate general NASA discovery and ingestion cycle in the background.",
 )
-async def trigger_ingestion(background_tasks: BackgroundTasks) -> Dict[str, Any]:
+async def trigger_ingestion() -> Dict[str, Any]:
     """Trigger an immediate NASA discovery and ingestion cycle."""
-    background_tasks.add_task(ingestion_scheduler.run_now)
+    asyncio.create_task(ingestion_scheduler.run_now(limit=5))
     return {
         "status": "triggered",
         "message": "Discovery and ingestion triggered in background task.",

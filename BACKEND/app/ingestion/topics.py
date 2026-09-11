@@ -4,12 +4,13 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 
-# Kafka Topic Names (5-Topic Target Architecture)
+# Kafka Topic Names (Target Architecture)
 TOPIC_GRANULES_DISCOVERED = "ritu.granules.discovered"
 TOPIC_GRANULES_RAW = "ritu.granules.raw"
 TOPIC_GRANULES_STATUS = "ritu.granules.status"
 TOPIC_GRANULES_TRANSFORMED = "ritu.granules.transformed"
 TOPIC_GRANULES_DLQ = "ritu.granules.dlq"
+TOPIC_WEATHER_OBSERVATION = TOPIC_GRANULES_STATUS
 
 # Backward-compatibility aliases (consolidated into ritu.granules.status)
 TOPIC_GRANULES_NEW = TOPIC_GRANULES_STATUS
@@ -70,3 +71,20 @@ class GranuleDLQMessage(BaseGranuleEvent):
     error_reason: str
     error_details: Optional[Dict[str, Any]] = None
     retryable: bool = False
+
+
+class WeatherObservationMessage(BaseGranuleEvent):
+    observation_time: datetime
+    latitude: float
+    longitude: float
+    precipitation: float
+    ice: Optional[float] = 0.0
+    liquid: Optional[float] = None
+    liquid_percent: Optional[float] = 100.0
+    num_precip_half_hour: Optional[int] = 1
+    num_valid_half_hour: Optional[int] = 1
+    source: str = "NASA"
+    product: str = "IMERG"
+    state: Optional[str] = None
+    district: Optional[str] = None
+

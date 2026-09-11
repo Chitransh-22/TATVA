@@ -49,12 +49,16 @@ CREATE TABLE IF NOT EXISTS precipitation_observations_staging (
     num_precip_half_hour INTEGER,
     num_valid_half_hour INTEGER,
     source VARCHAR(64) DEFAULT 'NASA',
-    product VARCHAR(64) DEFAULT 'IMERG'
+    product VARCHAR(64) DEFAULT 'IMERG',
+    state VARCHAR(128),
+    district VARCHAR(128)
 );
 
 -- Upgrade staging table if already created previously without columns
 ALTER TABLE precipitation_observations_staging ADD COLUMN IF NOT EXISTS source VARCHAR(64) DEFAULT 'NASA';
 ALTER TABLE precipitation_observations_staging ADD COLUMN IF NOT EXISTS product VARCHAR(64) DEFAULT 'IMERG';
+ALTER TABLE precipitation_observations_staging ADD COLUMN IF NOT EXISTS state VARCHAR(128);
+ALTER TABLE precipitation_observations_staging ADD COLUMN IF NOT EXISTS district VARCHAR(128);
 
 -- 3. Partitioned Main Observations Table
 CREATE TABLE IF NOT EXISTS precipitation_observations (
@@ -71,6 +75,8 @@ CREATE TABLE IF NOT EXISTS precipitation_observations (
     num_valid_half_hour INTEGER,
     source VARCHAR(64) DEFAULT 'NASA',
     product VARCHAR(64) DEFAULT 'IMERG',
+    state VARCHAR(128),
+    district VARCHAR(128),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (observation_time, granule_id, latitude, longitude)
 ) PARTITION BY RANGE (observation_time);
@@ -78,6 +84,12 @@ CREATE TABLE IF NOT EXISTS precipitation_observations (
 -- Upgrade partitioned main table if already created previously without columns
 ALTER TABLE precipitation_observations ADD COLUMN IF NOT EXISTS source VARCHAR(64) DEFAULT 'NASA';
 ALTER TABLE precipitation_observations ADD COLUMN IF NOT EXISTS product VARCHAR(64) DEFAULT 'IMERG';
+ALTER TABLE precipitation_observations ADD COLUMN IF NOT EXISTS state VARCHAR(128);
+ALTER TABLE precipitation_observations ADD COLUMN IF NOT EXISTS district VARCHAR(128);
+
+-- Performance indices for 7-day rolling window lookups & cleanup
+CREATE INDEX IF NOT EXISTS idx_precip_obs_time_only ON precipitation_observations (observation_time DESC);
+CREATE INDEX IF NOT EXISTS idx_precip_obs_state_district ON precipitation_observations (state, district);
 
 -- 4. Pre-aggregated Analytics Table
 CREATE TABLE IF NOT EXISTS aggregated_weather (
@@ -186,6 +198,7 @@ async def ensure_monthly_partition(conn: asyncpg.Connection, dt: datetime) -> st
     CREATE INDEX IF NOT EXISTS idx_{partition_name}_geom ON {partition_name} USING GIST (geom);
     CREATE INDEX IF NOT EXISTS idx_{partition_name}_time ON {partition_name} (observation_time DESC);
     CREATE INDEX IF NOT EXISTS idx_{partition_name}_granule ON {partition_name} (granule_id);
+    CREATE INDEX IF NOT EXISTS idx_{partition_name}_state_dist ON {partition_name} (state, district);
     """
     await conn.execute(ddl)
     return partition_name
@@ -267,13 +280,14 @@ async def run_migrations() -> bool:
         "user": settings.POSTGRES_USER,
         "password": settings.POSTGRES_PASSWORD,
         "database": settings.POSTGRES_DB,
-        "timeout": 5.0,
+        "timeout": 30.0,
     }
     if settings.POSTGRES_SSL:
         conn_kwargs["ssl"] = settings.POSTGRES_SSL
 
     try:
-        conn = await asyncpg.connect(**conn_kwargs)
+        from app.database.connection import connect_asyncpg_with_retry
+        conn = await connect_asyncpg_with_retry(max_retries=3, timeout=30.0)
     except asyncpg.InvalidCatalogNameError:
         # Target database does not exist, connect to postgres and create it
         logger.info(f"Database '{settings.POSTGRES_DB}' does not exist. Creating it...")
@@ -290,7 +304,7 @@ async def run_migrations() -> bool:
             logger.error(f"Failed to create database '{settings.POSTGRES_DB}': {create_err}")
             return False
     except Exception as conn_err:
-        logger.warning(f"Could not connect to PostgreSQL ({conn_err}). Operating in standalone/mock mode.", exc_info=True)
+        logger.warning(f"Could not connect to PostgreSQL ({conn_err}). Operating in standalone mode.", exc_info=True)
         return False
 
     # Step 2: Run DDL migrations & PostGIS verification

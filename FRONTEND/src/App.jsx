@@ -10,6 +10,7 @@ import { AuthModal } from './components/AuthModal';
 import { NATIONAL_METRICS } from './data/weatherData';
 import { weatherStore } from './data/weatherStore';
 import { useWeatherWebSocket } from './hooks/useWeatherWebSocket';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import './App.css';
 
 export function App() {
@@ -19,9 +20,15 @@ export function App() {
   const [selectedTime, setSelectedTime] = useState(null);
 
   // Single Persistent WebSocket Hook (Incremental updates, auto-reconnect, heartbeat)
+  const reconnectHandlerRef = useRef(null);
   const { status: wsStatus, telemetry: wsTelemetry } = useWeatherWebSocket(
     selectedState,
-    selectedDistrict
+    selectedDistrict,
+    useCallback(() => {
+      if (reconnectHandlerRef.current) {
+        reconnectHandlerRef.current();
+      }
+    }, [])
   );
 
   // Live Summary from WebSocket for Metric Tiles
@@ -105,16 +112,19 @@ export function App() {
     const cacheKey = time || 'latest';
     if (overviewCacheRef.current.has(cacheKey)) {
       const cached = overviewCacheRef.current.get(cacheKey);
+      const snapshotPoints = cached.observations && cached.observations.length > 0
+        ? cached.observations
+        : (cached.grid_points
+            ? cached.grid_points.map(([lat, lon, precip]) => ({
+                latitude: lat,
+                longitude: lon,
+                precipitation: precip,
+              }))
+            : []);
       weatherStore.loadSnapshot(
         { state: null, district: null },
-        cached.grid_points
-          ? cached.grid_points.map(([lat, lon, precip]) => ({
-              latitude: lat,
-              longitude: lon,
-              precipitation: precip,
-            }))
-          : [],
-        cached.observation_time
+        snapshotPoints,
+        cached.window_end || cached.observation_time
       );
       setOverviewData(cached);
       setIsLoading(false);
@@ -138,17 +148,29 @@ export function App() {
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (!data.national_summary || typeof data.national_summary !== 'object') {
+        data.national_summary = {
+          avg_precipitation: 0.0,
+          max_precipitation: 0.0,
+          min_precipitation: 0.0,
+          total_points: 0,
+          rain_category: 'Clear / Dry',
+        };
+      }
       overviewCacheRef.current.set(cacheKey, data);
+      const snapshotPoints = data.observations && data.observations.length > 0
+        ? data.observations
+        : (data.grid_points
+            ? data.grid_points.map(([lat, lon, precip]) => ({
+                latitude: lat,
+                longitude: lon,
+                precipitation: precip,
+              }))
+            : []);
       weatherStore.loadSnapshot(
         { state: null, district: null },
-        data.grid_points
-          ? data.grid_points.map(([lat, lon, precip]) => ({
-              latitude: lat,
-              longitude: lon,
-              precipitation: precip,
-            }))
-          : [],
-        data.observation_time
+        snapshotPoints,
+        data.window_end || data.observation_time
       );
       setOverviewData(data);
       fetchHistorical(null, null);
@@ -263,16 +285,28 @@ export function App() {
     }
   }, [fetchHistorical]);
 
+  // Wire WebSocket Reconnect Resync Callback (Requirement 12)
+  useEffect(() => {
+    reconnectHandlerRef.current = () => {
+      console.log('🔄 [WS Resync] Reconnected to server. Resynchronizing 7-day snapshot from PostgreSQL...');
+      const cur = selectionRef.current;
+      if (cur.selectedDistrict && cur.selectedState) {
+        fetchDistrict(cur.selectedState, cur.selectedDistrict, cur.selectedTime);
+      } else if (cur.selectedState) {
+        fetchState(cur.selectedState, cur.selectedTime);
+      } else {
+        fetchOverview(cur.selectedTime);
+      }
+    };
+  }, [fetchDistrict, fetchOverview, fetchState]);
+
   // =========================================================================
   // Initial Load (Parallel non-blocking fetch)
   // =========================================================================
 
   useEffect(() => {
-    // Concurrently fetch metadata and overview in parallel
-    fetchMetadata().then((meta) => {
-      const initialTime = meta?.latest_observation_time || null;
-      if (initialTime) setSelectedTime(initialTime);
-    });
+    // Parallel initial load: metadata for time dropdowns, overview for 7-day rolling dataset
+    fetchMetadata();
     fetchOverview();
   }, [fetchMetadata, fetchOverview]);
 
@@ -415,41 +449,47 @@ export function App() {
           )}
 
           {/* Filters & Search Header */}
-          <FiltersBar
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            selectedState={selectedState}
-            onSelectState={handleSelectState}
-            regionFilter={regionFilter}
-            onRegionChange={setRegionFilter}
-          />
+          <ErrorBoundary name="FiltersBar" title="Filters & Controls">
+            <FiltersBar
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              selectedState={selectedState}
+              onSelectState={handleSelectState}
+              regionFilter={regionFilter}
+              onRegionChange={setRegionFilter}
+            />
+          </ErrorBoundary>
 
           {/* Map Section with embedded Real TATVA Map & Overview Stats Cards */}
-          <IndiaMapSection
-            metrics={NATIONAL_METRICS}
-            selectedState={selectedState}
-            selectedDistrict={selectedDistrict}
-            onSelectState={handleSelectState}
-            onSelectDistrict={handleSelectDistrict}
-            onFitIndia={handleSelectIndia}
-            onBackToState={handleBackToState}
-            overviewData={overviewData}
-            stateData={stateData}
-            districtData={districtData}
-            isLoading={isLoading}
-            loadingMsg={loadingMsg}
-            opacity={opacity}
-            onOpacityChange={setOpacity}
-            selectedTime={selectedTime}
-            onTimeChange={handleTimeChange}
-            metadata={metadata}
-            wsStatus={wsStatus}
-            wsTelemetry={wsTelemetry}
-            liveSummary={liveSummary}
-          />
+          <ErrorBoundary name="IndiaMapSection" title="Map & Weather Analytics" onReset={() => fetchOverview(selectedTime)}>
+            <IndiaMapSection
+              metrics={NATIONAL_METRICS}
+              selectedState={selectedState}
+              selectedDistrict={selectedDistrict}
+              onSelectState={handleSelectState}
+              onSelectDistrict={handleSelectDistrict}
+              onFitIndia={handleSelectIndia}
+              onBackToState={handleBackToState}
+              overviewData={overviewData}
+              stateData={stateData}
+              districtData={districtData}
+              isLoading={isLoading}
+              loadingMsg={loadingMsg}
+              opacity={opacity}
+              onOpacityChange={setOpacity}
+              selectedTime={selectedTime}
+              onTimeChange={handleTimeChange}
+              metadata={metadata}
+              wsStatus={wsStatus}
+              wsTelemetry={wsTelemetry}
+              liveSummary={liveSummary}
+            />
+          </ErrorBoundary>
 
           {/* How It Works Section */}
-          <HowItWorksSection />
+          <ErrorBoundary name="HowItWorksSection" title="Platform Information">
+            <HowItWorksSection />
+          </ErrorBoundary>
         </div>
 
         {/* 3. Footer Section */}

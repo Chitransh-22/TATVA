@@ -2,9 +2,9 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
-from fastapi import APIRouter, Depends, Query, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, HTTPException, Request, WebSocket, WebSocketDisconnect, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -66,6 +66,187 @@ def clear_weather_cache() -> None:
 
 
 # =============================================================================
+# 0. PERSISTENT 7-DAY ROLLING PIPELINE CORE ENDPOINTS
+# =============================================================================
+
+@router.post("/events")
+async def ingest_weather_events(
+    payload: Union[Dict[str, Any], List[Dict[str, Any]]] = Body(...),
+) -> Dict[str, Any]:
+    """Ingest, validate, persist to PostgreSQL via UPSERT, commit, and broadcast new weather observation(s).
+
+    Follows architecture: Event -> Backend Validate -> PostgreSQL UPSERT -> Commit -> WebSocket Broadcast.
+    """
+    from app.ingestion.weather_event_service import weather_pipeline
+
+    if isinstance(payload, list):
+        events = payload
+    elif isinstance(payload, dict) and "events" in payload and isinstance(payload["events"], list):
+        events = payload["events"]
+    else:
+        events = [payload]
+
+    try:
+        persisted_count, normalized = await weather_pipeline.process_and_persist_events(
+            events=events,
+            publish_to_kafka=True,
+        )
+        return {
+            "status": "success",
+            "persisted_count": persisted_count,
+            "broadcasted": True,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "events": normalized,
+        }
+    except Exception as e:
+        logger.error(f"Error in /weather/events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to persist weather event: {str(e)}")
+
+
+@router.get("/snapshot/7day")
+async def get_7day_weather_snapshot(
+    db: AsyncSession = Depends(get_db),
+    state: Optional[str] = Query(None, description="Optional state filter"),
+    district: Optional[str] = Query(None, description="Optional district filter"),
+    grid_step: float = Query(0.2, ge=0.05, le=1.0, description="Step in degrees for raster grid"),
+    min_precipitation: float = Query(0.0, ge=0.0, description="Minimum precipitation threshold mm/hr"),
+    limit: int = Query(5000, le=20000, description="Max observations returned"),
+) -> Dict[str, Any]:
+    """Retrieve rolling 7-day active weather dataset strictly filtered at the database level.
+
+    WHERE observation_time >= NOW() - INTERVAL '7 days' AND observation_time <= NOW().
+    Used on initial load and browser reload/reconnect to synchronize frontend state.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=7)
+
+        clauses = ["observation_time >= :cutoff", "observation_time <= :now"]
+        params: Dict[str, Any] = {
+            "cutoff": cutoff,
+            "now": now,
+            "step": grid_step,
+            "min_p": min_precipitation,
+            "limit": limit,
+        }
+
+        if district:
+            clauses.append("(district ILIKE :district OR state ILIKE :state)")
+            params["district"] = f"%{district.strip()}%"
+            params["state"] = f"%{state.strip()}%" if state else "%"
+        elif state:
+            clauses.append("state ILIKE :state")
+            params["state"] = f"%{state.strip()}%"
+
+        if min_precipitation > 0:
+            clauses.append("precipitation >= :min_p")
+
+        where_sql = " AND ".join(clauses)
+
+        # Summary rollup
+        sum_sql = f"""
+            SELECT
+                ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
+                ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
+                ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
+                COUNT(*) as pt_count
+            FROM precipitation_observations
+            WHERE {where_sql};
+        """
+        s_res = await db.execute(text(sum_sql), params)
+        s_row = s_res.first()
+        max_p = float(s_row.max_p or 0.0) if s_row else 0.0
+        summary = {
+            "avg_precipitation": float(s_row.avg_p or 0.0) if s_row else 0.0,
+            "max_precipitation": max_p,
+            "min_precipitation": float(s_row.min_p or 0.0) if s_row else 0.0,
+            "total_points": int(s_row.pt_count or 0) if s_row else 0,
+            "rain_category": _classify_rain(max_p),
+        }
+
+        # Observations query
+        obs_sql = f"""
+            SELECT
+                granule_id, observation_time, latitude, longitude,
+                precipitation, liquid, ice, liquid_percent, state, district
+            FROM precipitation_observations
+            WHERE {where_sql}
+            ORDER BY observation_time DESC
+            LIMIT :limit;
+        """
+        o_res = await db.execute(text(obs_sql), params)
+        rows = o_res.fetchall()
+
+        # Grid points for high-performance canvas heatmap
+        grid_sql = f"""
+            SELECT
+                ROUND((latitude / :step)::numeric) * :step as lat,
+                ROUND((longitude / :step)::numeric) * :step as lon,
+                ROUND(AVG(precipitation)::numeric, 1) as precip
+            FROM precipitation_observations
+            WHERE {where_sql} AND precipitation >= 0.1
+            GROUP BY 1, 2
+            ORDER BY 1, 2;
+        """
+        g_res = await db.execute(text(grid_sql), params)
+        grid_points = [[float(r.lat), float(r.lon), float(r.precip)] for r in g_res.fetchall()]
+
+        observations = [
+            {
+                "id": f"{r.latitude:.2f}_{r.longitude:.2f}",
+                "latitude": float(r.latitude),
+                "longitude": float(r.longitude),
+                "precipitation": float(r.precipitation or 0.0),
+                "liquid": float(r.liquid or r.precipitation or 0.0),
+                "ice": float(r.ice or 0.0),
+                "liquid_percent": float(r.liquid_percent or 100.0),
+                "observation_time": r.observation_time.isoformat(),
+                "timestamp": r.observation_time.isoformat(),
+                "state": r.state,
+                "district": r.district,
+                "granule_id": r.granule_id,
+            }
+            for r in rows
+        ]
+
+        return {
+            "status": "success",
+            "window_start": cutoff.isoformat(),
+            "window_end": now.isoformat(),
+            "window_hours": 168,
+            "state": state,
+            "district": district,
+            "summary": summary,
+            "records_count": len(observations),
+            "observations": observations,
+            "grid_points": grid_points,
+            "grid_step": grid_step,
+        }
+
+    except Exception as e:
+        logger.error(f"Error in /weather/snapshot/7day: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "window_start": (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),
+            "window_end": datetime.now(timezone.utc).isoformat(),
+            "summary": {"avg_precipitation": 0.0, "max_precipitation": 0.0, "min_precipitation": 0.0, "total_points": 0, "rain_category": "Clear / Dry"},
+            "records_count": 0,
+            "observations": [],
+            "grid_points": [],
+        }
+
+
+@router.post("/cleanup")
+async def trigger_weather_cleanup(
+    days: int = Query(7, ge=1, le=365, description="Retention window in days (default 7)"),
+) -> Dict[str, Any]:
+    """Execute scheduled rolling 7-day database cleanup to delete records older than T - 7 days."""
+    from app.scheduler.scheduler_service import ingestion_scheduler
+    return await ingestion_scheduler.cleanup_expired_observations(days=days)
+
+
+# =============================================================================
 # 1. LIVE DATA FRESHNESS & METADATA
 # =============================================================================
 
@@ -76,48 +257,61 @@ async def get_weather_metadata(db: AsyncSession = Depends(get_db)) -> Dict[str, 
     Includes authoritative database timestamps formatted in IST.
     """
     try:
-        # 1. Available distinct observation timestamps from ingestion_ledger (COMPLETED status)
+        # 1. Authoritative latest active observation time in precipitation_observations table
+        active_time_res = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations;"))
+        active_latest = active_time_res.scalar_one_or_none()
+
+        # 2. Available distinct observation timestamps from ingestion_ledger (COMPLETED status)
         times_res = await db.execute(text("""
             SELECT observation_time, granule_id, row_count
             FROM ingestion_ledger
-            WHERE status = 'COMPLETED'
+            WHERE status IN ('COMPLETED', 'PERSISTED')
             ORDER BY observation_time DESC
             LIMIT 20;
         """))
         ledger_completed = times_res.fetchall()
 
-        if ledger_completed:
+        latest_granule = "NONE"
+        total_pts = 0
+        latest_time = None
+
+        matching_ledger = next((r for r in ledger_completed if r.observation_time == active_latest), None) if active_latest else None
+        if matching_ledger:
+            latest_time = active_latest
+            latest_granule = matching_ledger.granule_id
+            total_pts = int(matching_ledger.row_count or 0)
+        elif ledger_completed:
             latest_time = ledger_completed[0].observation_time
             latest_granule = ledger_completed[0].granule_id
             total_pts = int(ledger_completed[0].row_count or 0)
-            available_times = [
-                {
-                    "observation_time": r.observation_time.isoformat(),
-                    "observation_ist": _to_ist_str(r.observation_time),
-                    "granule_id": r.granule_id,
-                    "point_count": int(r.row_count or 0),
-                }
-                for r in ledger_completed
-            ]
-        else:
-            latest_time = None
-            latest_granule = "NONE"
+        elif active_latest:
+            latest_time = active_latest
+            latest_granule = "IMERG"
             total_pts = 0
-            available_times = []
 
-        # 2. Total points recorded across all completed granules
+        available_times = [
+            {
+                "observation_time": r.observation_time.isoformat(),
+                "observation_ist": _to_ist_str(r.observation_time),
+                "granule_id": r.granule_id,
+                "point_count": int(r.row_count or 0),
+            }
+            for r in ledger_completed
+        ]
+
+        # 3. Total points recorded across all completed granules
         total_all_res = await db.execute(text("""
             SELECT COALESCE(SUM(row_count), 0)
             FROM ingestion_ledger
-            WHERE status = 'COMPLETED';
+            WHERE status IN ('COMPLETED', 'PERSISTED');
         """))
         total_all = int(total_all_res.scalar_one_or_none() or 0)
 
-        # 3. Latest ledger entry for pipeline status
+        # 4. Latest ledger entry for pipeline status
         ledger_res = await db.execute(text("""
             SELECT granule_id, status, observation_time, row_count, created_at, updated_at
             FROM ingestion_ledger
-            ORDER BY created_at DESC
+            ORDER BY updated_at DESC
             LIMIT 1;
         """))
         ledger_row = ledger_res.first()
@@ -125,7 +319,7 @@ async def get_weather_metadata(db: AsyncSession = Depends(get_db)) -> Dict[str, 
 
         return {
             "status": "success",
-            "is_live": total_all > 0,
+            "is_live": total_all > 0 or active_latest is not None,
             "latest_observation_time": latest_time.isoformat() if latest_time else None,
             "latest_observation_ist": _to_ist_str(latest_time) if latest_time else "No Data Ingested",
             "latest_granule_id": latest_granule,
@@ -135,7 +329,7 @@ async def get_weather_metadata(db: AsyncSession = Depends(get_db)) -> Dict[str, 
             "available_timestamps": available_times,
         }
     except Exception as e:
-        logger.error(f"Error in /weather/metadata: {e}")
+        logger.error(f"Error in /weather/metadata: {type(e).__name__}: {e}", exc_info=True)
         return {
             "status": "error",
             "message": str(e),
@@ -152,61 +346,22 @@ async def get_weather_metadata(db: AsyncSession = Depends(get_db)) -> Dict[str, 
 @router.get("/india/overview")
 async def get_india_overview(
     db: AsyncSession = Depends(get_db),
-    observation_time: Optional[str] = Query(None, description="ISO observation time; defaults to latest full dataset"),
+    observation_time: Optional[str] = Query(None, description="ISO observation time; if omitted, defaults to rolling 7-day active window"),
+    window_days: int = Query(7, ge=1, le=30, description="Rolling window duration in days (default 7)"),
     grid_step: float = Query(0.2, ge=0.1, le=1.0, description="Step in degrees for hardware-accelerated canvas heatmap"),
 ) -> Dict[str, Any]:
-    """Retrieve full India overview: national metrics, state summaries, and canvas raster points."""
+    """Retrieve full India overview: rolling 7-day active dataset (or specific timestamp), national metrics, state summaries, and canvas raster points."""
     try:
-        # Resolve target observation_time from ingestion_ledger
+        now = datetime.now(timezone.utc)
+
         if observation_time:
+            # Explicit historical timestamp requested
             target_dt = _parse_iso_time(observation_time)
-        else:
-            time_query = text("""
-                SELECT observation_time
-                FROM ingestion_ledger
-                WHERE status = 'COMPLETED' AND row_count > 500
-                ORDER BY observation_time DESC
-                LIMIT 1;
-            """)
-            res = await db.execute(time_query)
-            target_dt = res.scalar_one_or_none()
-            if not target_dt:
-                time_fb = await db.execute(text("""
-                    SELECT observation_time
-                    FROM ingestion_ledger
-                    WHERE status = 'COMPLETED'
-                    ORDER BY observation_time DESC
-                    LIMIT 1;
-                """))
-                target_dt = time_fb.scalar_one_or_none()
+            cache_key = f"single_{target_dt.isoformat()}_{grid_step}"
+            if cache_key in _CACHE_OVERVIEW:
+                return _CACHE_OVERVIEW[cache_key]
 
-        if not target_dt:
-            return {
-                "status": "no_data",
-                "message": "No observation data available yet.",
-                "observation_time": None,
-                "observation_ist": "N/A",
-                "national_summary": {},
-                "state_summaries": [],
-                "grid_points": [],
-            }
-
-        # Check in-memory cache
-        cache_key = f"{target_dt.isoformat()}_{grid_step}"
-        if cache_key in _CACHE_OVERVIEW:
-            return _CACHE_OVERVIEW[cache_key]
-
-        # 1. Fetch National Summary from weather_region_summary or on the fly
-        nat_res = await db.execute(text("""
-            SELECT avg_precipitation, max_precipitation, min_precipitation, total_points, rain_category, granule_id
-            FROM weather_region_summary
-            WHERE observation_time = :obs_time AND region_type = 'NATIONAL'
-            LIMIT 1;
-        """), {"obs_time": target_dt})
-        nat_row = nat_res.first()
-
-        if not nat_row:
-            # Fallback compute national on the fly
+            # 1. National Summary for single timestamp
             nat_calc = await db.execute(text("""
                 SELECT
                     ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
@@ -218,6 +373,24 @@ async def get_india_overview(
                 WHERE observation_time = :obs_time;
             """), {"obs_time": target_dt})
             c = nat_calc.first()
+            if not c or not c.pt_count:
+                return {
+                    "status": "no_data",
+                    "message": f"No observation data for {observation_time}.",
+                    "observation_time": target_dt.isoformat(),
+                    "observation_ist": _to_ist_str(target_dt),
+                    "national_summary": {
+                        "avg_precipitation": 0.0,
+                        "max_precipitation": 0.0,
+                        "min_precipitation": 0.0,
+                        "total_points": 0,
+                        "rain_category": "Clear / Dry",
+                        "granule_id": "NO-DATA",
+                    },
+                    "state_summaries": [],
+                    "grid_points": [],
+                    "observations": [],
+                }
             max_p = float(c.max_p or 0.0)
             national_summary = {
                 "avg_precipitation": float(c.avg_p or 0.0),
@@ -227,75 +400,313 @@ async def get_india_overview(
                 "rain_category": _classify_rain(max_p),
                 "granule_id": c.gid,
             }
-        else:
-            national_summary = {
-                "avg_precipitation": float(nat_row.avg_precipitation or 0.0),
-                "max_precipitation": float(nat_row.max_precipitation or 0.0),
-                "min_precipitation": float(nat_row.min_precipitation or 0.0),
-                "total_points": int(nat_row.total_points or 0),
-                "rain_category": nat_row.rain_category,
-                "granule_id": nat_row.granule_id,
+
+            # 2. State Summaries
+            states_res = await db.execute(text("""
+                SELECT
+                    s.state_name,
+                    s.min_lat, s.max_lat, s.min_lon, s.max_lon, s.center_lat, s.center_lon,
+                    COALESCE(w.avg_precipitation, 0.0) as avg_precipitation,
+                    COALESCE(w.max_precipitation, 0.0) as max_precipitation,
+                    COALESCE(w.min_precipitation, 0.0) as min_precipitation,
+                    COALESCE(w.total_points, 0) as total_points,
+                    COALESCE(w.rain_category, 'Clear / Dry') as rain_category
+                FROM boundary_states s
+                LEFT JOIN weather_region_summary w ON
+                    w.observation_time = :obs_time
+                    AND w.region_type = 'STATE'
+                    AND w.region_name = s.state_name
+                ORDER BY w.max_precipitation DESC NULLS LAST, s.state_name ASC;
+            """), {"obs_time": target_dt})
+            state_rows = states_res.fetchall()
+
+            if not any(r.total_points > 0 for r in state_rows):
+                fallback_res = await db.execute(text("""
+                    SELECT
+                        s.state_name,
+                        s.min_lat, s.max_lat, s.min_lon, s.max_lon, s.center_lat, s.center_lon,
+                        ROUND(COALESCE(AVG(p.precipitation), 0)::numeric, 2) as avg_precipitation,
+                        ROUND(COALESCE(MAX(p.precipitation), 0)::numeric, 2) as max_precipitation,
+                        ROUND(COALESCE(MIN(p.precipitation), 0)::numeric, 2) as min_precipitation,
+                        COUNT(p.latitude) as total_points
+                    FROM boundary_states s
+                    LEFT JOIN precipitation_observations p ON
+                        (p.state ILIKE s.state_name OR (p.latitude BETWEEN s.min_lat AND s.max_lat AND p.longitude BETWEEN s.min_lon AND s.max_lon))
+                        AND p.observation_time = :obs_time
+                    GROUP BY s.state_name, s.min_lat, s.max_lat, s.min_lon, s.max_lon, s.center_lat, s.center_lon
+                    ORDER BY max_precipitation DESC NULLS LAST, s.state_name ASC;
+                """), {"obs_time": target_dt})
+                state_rows = fallback_res.fetchall()
+
+            state_summaries = [
+                {
+                    "state_name": r.state_name,
+                    "avg_precipitation": float(r.avg_precipitation),
+                    "max_precipitation": float(r.max_precipitation),
+                    "min_precipitation": float(r.min_precipitation),
+                    "total_points": int(r.total_points),
+                    "rain_category": getattr(r, "rain_category", None) or _classify_rain(float(r.max_precipitation)),
+                    "bbox": [r.min_lat, r.min_lon, r.max_lat, r.max_lon],
+                    "center": [r.center_lat, r.center_lon],
+                }
+                for r in state_rows
+            ]
+
+            # 3. Canvas Heatmap Grid
+            grid_res = await db.execute(text("""
+                SELECT
+                    ROUND((latitude / :step)::numeric) * :step as lat,
+                    ROUND((longitude / :step)::numeric) * :step as lon,
+                    ROUND(AVG(precipitation)::numeric, 1) as precip
+                FROM precipitation_observations
+                WHERE observation_time = :obs_time AND precipitation >= 0.1
+                GROUP BY 1, 2
+                ORDER BY 1, 2;
+            """), {"obs_time": target_dt, "step": grid_step})
+            grid_points = [
+                [float(r.lat), float(r.lon), float(r.precip)]
+                for r in grid_res.fetchall()
+            ]
+            if not grid_points:
+                # Fallback to grid points with 0.0 precipitation if all points are dry
+                grid_res_all = await db.execute(text("""
+                    SELECT
+                        ROUND((latitude / :step)::numeric) * :step as lat,
+                        ROUND((longitude / :step)::numeric) * :step as lon,
+                        ROUND(AVG(precipitation)::numeric, 1) as precip
+                    FROM precipitation_observations
+                    WHERE observation_time = :obs_time
+                    GROUP BY 1, 2
+                    ORDER BY 1, 2
+                    LIMIT 2000;
+                """), {"obs_time": target_dt, "step": grid_step})
+                grid_points = [
+                    [float(r.lat), float(r.lon), float(r.precip)]
+                    for r in grid_res_all.fetchall()
+                ]
+
+            # 4. Raw observations for single timestamp
+            obs_res = await db.execute(text("""
+                SELECT
+                    granule_id, observation_time, latitude, longitude,
+                    precipitation, liquid, ice, liquid_percent, state, district
+                FROM precipitation_observations
+                WHERE observation_time = :obs_time
+                LIMIT 5000;
+            """), {"obs_time": target_dt})
+            observations = [
+                {
+                    "id": f"{r.latitude:.2f}_{r.longitude:.2f}",
+                    "latitude": float(r.latitude),
+                    "longitude": float(r.longitude),
+                    "precipitation": float(r.precipitation or 0.0),
+                    "liquid": float(r.liquid or r.precipitation or 0.0),
+                    "ice": float(r.ice or 0.0),
+                    "liquid_percent": float(r.liquid_percent or 100.0),
+                    "observation_time": r.observation_time.isoformat(),
+                    "timestamp": r.observation_time.isoformat(),
+                    "state": r.state,
+                    "district": r.district,
+                    "granule_id": r.granule_id,
+                }
+                for r in obs_res.fetchall()
+            ]
+
+            result = {
+                "status": "success",
+                "is_7day_rolling": False,
+                "observation_time": target_dt.isoformat(),
+                "observation_ist": _to_ist_str(target_dt),
+                "granule_id": national_summary.get("granule_id", "IMERG"),
+                "national_summary": national_summary,
+                "state_summaries": state_summaries,
+                "grid_points": grid_points,
+                "grid_step": grid_step,
+                "observations": observations,
+            }
+            _CACHE_OVERVIEW[cache_key] = result
+            return result
+
+        try:
+            days_int = int(window_days)
+        except Exception:
+            days_int = 7
+
+        try:
+            step_val = float(grid_step)
+        except Exception:
+            step_val = 0.2
+
+        # ROLLING 7-DAY ACTIVE DATASET: WHERE observation_time >= NOW() - 7 days AND observation_time <= NOW()
+        cutoff = now - timedelta(days=days_int)
+        cache_key = f"7day_{step_val}"
+        if cache_key in _CACHE_OVERVIEW:
+            return _CACHE_OVERVIEW[cache_key]
+
+        # 1. National 7-Day Rollup
+        nat_calc = await db.execute(text("""
+            SELECT
+                ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
+                ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
+                ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
+                COUNT(*) as pt_count,
+                COALESCE(MAX(granule_id), 'IMERG-7DAY') as gid,
+                MAX(observation_time) as latest_time
+            FROM precipitation_observations
+            WHERE observation_time >= :cutoff AND observation_time <= :now;
+        """), {"cutoff": cutoff, "now": now})
+        c = nat_calc.first()
+
+        latest_time = c.latest_time if c else None
+        total_pts = int(c.pt_count or 0) if c else 0
+
+        # If no records in current [now - 7d, now] window, check if older historical data exists
+        if total_pts == 0:
+            latest_db_res = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations;"))
+            db_latest = latest_db_res.scalar_one_or_none()
+            if db_latest:
+                # Anchor the 7-day window to the most recent data available
+                now = db_latest
+                cutoff = now - timedelta(days=days_int)
+                nat_calc = await db.execute(text("""
+                    SELECT
+                        ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
+                        ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
+                        ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
+                        COUNT(*) as pt_count,
+                        COALESCE(MAX(granule_id), 'IMERG-7DAY') as gid,
+                        MAX(observation_time) as latest_time
+                    FROM precipitation_observations
+                    WHERE observation_time >= :cutoff AND observation_time <= :now;
+                """), {"cutoff": cutoff, "now": now})
+                c = nat_calc.first()
+                latest_time = c.latest_time if c else db_latest
+                total_pts = int(c.pt_count or 0) if c else 0
+
+        if total_pts == 0:
+            return {
+                "status": "no_data",
+                "message": "No observation data available in the 7-day active window.",
+                "window_start": cutoff.isoformat(),
+                "window_end": now.isoformat(),
+                "window_hours": days_int * 24,
+                "observation_time": None,
+                "observation_ist": "N/A",
+                "national_summary": {
+                    "avg_precipitation": 0.0,
+                    "max_precipitation": 0.0,
+                    "min_precipitation": 0.0,
+                    "total_points": 0,
+                    "rain_category": "Clear / Dry",
+                    "granule_id": "NO-DATA",
+                },
+                "state_summaries": [],
+                "grid_points": [],
+                "observations": [],
             }
 
-        # 2. Fetch all 36 State Summaries (Instant read from weather_region_summary joined with boundary_states)
+        max_p = float(c.max_p or 0.0)
+        national_summary = {
+            "avg_precipitation": float(c.avg_p or 0.0),
+            "max_precipitation": max_p,
+            "min_precipitation": float(c.min_p or 0.0),
+            "total_points": total_pts,
+            "rain_category": _classify_rain(max_p),
+            "granule_id": c.gid,
+        }
+
+        # 2. State Rollups over 7-Day Window
         states_res = await db.execute(text("""
             SELECT
                 s.state_name,
                 s.min_lat, s.max_lat, s.min_lon, s.max_lon, s.center_lat, s.center_lon,
-                COALESCE(w.avg_precipitation, 0.0) as avg_precipitation,
-                COALESCE(w.max_precipitation, 0.0) as max_precipitation,
-                COALESCE(w.min_precipitation, 0.0) as min_precipitation,
-                COALESCE(w.total_points, 0) as total_points,
-                COALESCE(w.rain_category, 'Clear / Dry') as rain_category
+                ROUND(COALESCE(AVG(p.precipitation), 0)::numeric, 2) as avg_precipitation,
+                ROUND(COALESCE(MAX(p.precipitation), 0)::numeric, 2) as max_precipitation,
+                ROUND(COALESCE(MIN(p.precipitation), 0)::numeric, 2) as min_precipitation,
+                COUNT(p.latitude) as total_points
             FROM boundary_states s
-            LEFT JOIN weather_region_summary w ON
-                w.observation_time = :obs_time
-                AND w.region_type = 'STATE'
-                AND w.region_name = s.state_name
-            ORDER BY w.max_precipitation DESC NULLS LAST, s.state_name ASC;
-        """), {"obs_time": target_dt})
+            LEFT JOIN precipitation_observations p ON
+                (p.state ILIKE s.state_name OR (p.latitude BETWEEN s.min_lat AND s.max_lat AND p.longitude BETWEEN s.min_lon AND s.max_lon))
+                AND p.observation_time >= :cutoff
+                AND p.observation_time <= :now
+            GROUP BY s.state_name, s.min_lat, s.max_lat, s.min_lon, s.max_lon, s.center_lat, s.center_lon
+            ORDER BY max_precipitation DESC NULLS LAST, s.state_name ASC;
+        """), {"cutoff": cutoff, "now": now})
         state_rows = states_res.fetchall()
 
         state_summaries = [
             {
                 "state_name": r.state_name,
-                "avg_precipitation": float(r.avg_precipitation),
-                "max_precipitation": float(r.max_precipitation),
-                "min_precipitation": float(r.min_precipitation),
-                "total_points": int(r.total_points),
-                "rain_category": r.rain_category,
+                "avg_precipitation": float(r.avg_precipitation or 0.0),
+                "max_precipitation": float(r.max_precipitation or 0.0),
+                "min_precipitation": float(r.min_precipitation or 0.0),
+                "total_points": int(r.total_points or 0),
+                "rain_category": _classify_rain(float(r.max_precipitation or 0.0)),
                 "bbox": [r.min_lat, r.min_lon, r.max_lat, r.max_lon],
                 "center": [r.center_lat, r.center_lon],
             }
             for r in state_rows
         ]
 
-        # 3. Downsampled grid for hardware-accelerated canvas heatmap rendering
-        # Rounds coordinates by grid_step to avoid sending 90,000 unneeded points
+        # 3. Canvas Grid Points over 7-Day Window
         grid_res = await db.execute(text("""
             SELECT
                 ROUND((latitude / :step)::numeric) * :step as lat,
                 ROUND((longitude / :step)::numeric) * :step as lon,
                 ROUND(AVG(precipitation)::numeric, 1) as precip
             FROM precipitation_observations
-            WHERE observation_time = :obs_time AND precipitation >= 0.1
+            WHERE observation_time >= :cutoff AND observation_time <= :now AND precipitation >= 0.1
             GROUP BY 1, 2
             ORDER BY 1, 2;
-        """), {"obs_time": target_dt, "step": grid_step})
+        """), {"cutoff": cutoff, "now": now, "step": grid_step})
         grid_points = [
             [float(r.lat), float(r.lon), float(r.precip)]
             for r in grid_res.fetchall()
         ]
 
+        # 4. Individual 7-Day Observations for weatherStore
+        obs_res = await db.execute(text("""
+            SELECT
+                granule_id, observation_time, latitude, longitude,
+                precipitation, liquid, ice, liquid_percent, state, district
+            FROM precipitation_observations
+            WHERE observation_time >= :cutoff AND observation_time <= :now
+            ORDER BY observation_time DESC
+            LIMIT 5000;
+        """), {"cutoff": cutoff, "now": now})
+        observations = [
+            {
+                "id": f"{r.latitude:.2f}_{r.longitude:.2f}",
+                "latitude": float(r.latitude),
+                "longitude": float(r.longitude),
+                "precipitation": float(r.precipitation or 0.0),
+                "liquid": float(r.liquid or r.precipitation or 0.0),
+                "ice": float(r.ice or 0.0),
+                "liquid_percent": float(r.liquid_percent or 100.0),
+                "observation_time": r.observation_time.isoformat(),
+                "timestamp": r.observation_time.isoformat(),
+                "state": r.state,
+                "district": r.district,
+                "granule_id": r.granule_id,
+            }
+            for r in obs_res.fetchall()
+        ]
+
+        effective_time = latest_time or now
         result = {
             "status": "success",
-            "observation_time": target_dt.isoformat(),
-            "observation_ist": _to_ist_str(target_dt),
-            "granule_id": national_summary.get("granule_id", "IMERG"),
+            "is_7day_rolling": True,
+            "window_start": cutoff.isoformat(),
+            "window_end": now.isoformat(),
+            "window_hours": days_int * 24,
+            "observation_time": effective_time.isoformat(),
+            "observation_ist": _to_ist_str(effective_time),
+            "granule_id": national_summary.get("granule_id", "IMERG-7DAY"),
             "national_summary": national_summary,
             "state_summaries": state_summaries,
             "grid_points": grid_points,
-            "grid_step": grid_step,
+            "grid_step": step_val,
+            "observations": observations,
         }
         _CACHE_OVERVIEW[cache_key] = result
         return result
@@ -305,8 +716,17 @@ async def get_india_overview(
         return {
             "status": "error",
             "message": str(e),
+            "national_summary": {
+                "avg_precipitation": 0.0,
+                "max_precipitation": 0.0,
+                "min_precipitation": 0.0,
+                "total_points": 0,
+                "rain_category": "Clear / Dry",
+                "granule_id": "ERROR",
+            },
             "state_summaries": [],
             "grid_points": [],
+            "observations": [],
         }
 
 
@@ -354,6 +774,16 @@ async def get_state_weather(
                     LIMIT 1;
                 """))
                 target_dt = time_fb.scalar_one_or_none()
+            if not target_dt:
+                time_obs = await db.execute(text("""
+                    SELECT MAX(observation_time)
+                    FROM precipitation_observations
+                    WHERE state ILIKE :st;
+                """), {"st": state.state_name})
+                target_dt = time_obs.scalar_one_or_none()
+            if not target_dt:
+                time_any = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations;"))
+                target_dt = time_any.scalar_one_or_none()
 
         if not target_dt:
             return {
@@ -568,6 +998,16 @@ async def get_district_weather(
                     LIMIT 1;
                 """))
                 target_dt = time_fb.scalar_one_or_none()
+            if not target_dt:
+                time_obs = await db.execute(text("""
+                    SELECT MAX(observation_time)
+                    FROM precipitation_observations
+                    WHERE district ILIKE :dist OR state ILIKE :st;
+                """), {"dist": district.district_name, "st": district.state_name})
+                target_dt = time_obs.scalar_one_or_none()
+            if not target_dt:
+                time_any = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations;"))
+                target_dt = time_any.scalar_one_or_none()
 
         if not target_dt:
             return {

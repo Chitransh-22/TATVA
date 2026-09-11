@@ -25,6 +25,9 @@ logger = logging.getLogger("ritu")
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown lifecycle."""
     logger.info("Initializing RITU Weather Big Data Platform...")
+    logger.info(f"[Config] Raw data directory: {settings.DATA_RAW_DIR}")
+    logger.info(f"[Config] Extracted data directory: {settings.DATA_EXTRACTED_DIR}")
+    logger.info(f"[Config] Transformed data directory: {settings.DATA_TRANSFORMED_DIR}")
     
     # 1. Database migrations
     try:
@@ -91,13 +94,17 @@ async def root():
 async def health_check():
     db_ok = False
     try:
+        import socket
+        s = socket.create_connection((settings.POSTGRES_HOST, settings.POSTGRES_PORT), timeout=0.8)
+        s.close()
+
         conn_kwargs = {
             "host": settings.POSTGRES_HOST,
             "port": settings.POSTGRES_PORT,
             "user": settings.POSTGRES_USER,
             "password": settings.POSTGRES_PASSWORD,
             "database": settings.POSTGRES_DB,
-            "timeout": 5.0,
+            "timeout": 2.0,
         }
         if settings.POSTGRES_SSL:
             conn_kwargs["ssl"] = settings.POSTGRES_SSL

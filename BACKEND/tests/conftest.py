@@ -33,10 +33,13 @@ def test_client():
         yield client
 
 
+import uuid
+
 @pytest.fixture
 def synthetic_imerg_bundle(tmp_path):
     """Generate a realistic synthetic NASA IMERG ZIP granule with 6 GeoTIFF layers."""
-    granule_id = "3B-HHR-L.MS.MRG.3IMERG.20260903-S053000-E055959.0330.V07C.7day"
+    tag = uuid.uuid4().hex[:6]
+    granule_id = f"3B-HHR-L.MS.MRG.3IMERG.20260903-S053000-E055959.0330.V07C.{tag}"
     zip_filename = f"{granule_id}.zip"
     
     layers = {

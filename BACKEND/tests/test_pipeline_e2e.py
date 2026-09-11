@@ -1,8 +1,10 @@
 import pytest
 from pathlib import Path
+from unittest.mock import patch, AsyncMock
 from app.ingestion.pipeline import pipeline_service
 from app.ingestion.deduplication import dedup_ledger, compute_file_sha256
 from app.config import settings
+from app.database.connection import is_database_reachable
 
 
 @pytest.mark.asyncio
@@ -35,5 +37,5 @@ async def test_end_to_end_pipeline_direct_and_dedup(synthetic_imerg_bundle, tmp_
         checksum=checksum,
     )
 
-    # In local testing without running Postgres, evaluate_and_route returns fallback or False if DB connected
-    assert isinstance(is_new, bool)
+    assert is_new is False
+    assert "completed" in reason.lower() or "duplicate" in reason.lower()

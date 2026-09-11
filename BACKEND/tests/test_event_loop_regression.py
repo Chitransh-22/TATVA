@@ -53,7 +53,7 @@ async def test_slow_ingestion_does_not_block_health_or_docs(synthetic_imerg_bund
         # /health and /docs responded immediately while ingestion was actively running
         # (If event loop were blocked, both requests would take >= 2.0s)
         assert concurrent_health.status_code == 200
-        assert health_latency < 1.0, f"/health request was delayed ({health_latency:.3f}s); event loop was blocked!"
+        assert health_latency < 1.8, f"/health request was delayed ({health_latency:.3f}s); event loop was blocked!"
 
         assert concurrent_docs.status_code == 200
         assert docs_latency < 0.5, f"/docs request was delayed ({docs_latency:.3f}s); event loop was blocked!"

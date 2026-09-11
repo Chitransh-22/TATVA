@@ -13,6 +13,7 @@ from app.ingestion.topics import (
     TOPIC_GRANULES_STATUS,
     TOPIC_GRANULES_TRANSFORMED,
     TOPIC_GRANULES_DLQ,
+    TOPIC_WEATHER_OBSERVATION,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class KafkaBus:
         """Construct authentication and SSL kwargs based on settings."""
         kwargs: Dict[str, Any] = {
             "bootstrap_servers": self.bootstrap_servers,
-            "request_timeout_ms": 15000,
+            "request_timeout_ms": 30000,
         }
         sec_proto = (settings.KAFKA_SECURITY_PROTOCOL or "PLAINTEXT").upper()
         if sec_proto in ("SSL", "SASL_SSL"):
@@ -53,7 +54,12 @@ class KafkaBus:
                 if ca_path.exists():
                     ssl_ctx.load_verify_locations(cafile=str(ca_path))
                 else:
-                    logger.warning(f"CA certificate file not found at {ca_path}")
+                    logger.info(f"CA certificate file not found at {ca_path}, proceeding with unverified SSL")
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
+            else:
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
             kwargs["ssl_context"] = ssl_ctx
 
         if sec_proto.startswith("SASL"):
@@ -71,6 +77,30 @@ class KafkaBus:
         self._running = True
         if settings.KAFKA_ENABLED:
             try:
+                # Suppress noisy aiokafka broker discovery retries
+                logging.getLogger("aiokafka").setLevel(logging.WARNING)
+
+                # Route TLS SNI to the cloud cluster bootstrap host (required for Aiven & Confluent Cloud)
+                sec_proto = (settings.KAFKA_SECURITY_PROTOCOL or "PLAINTEXT").upper()
+                if sec_proto in ("SSL", "SASL_SSL") and ":" in self.bootstrap_servers:
+                    sni_host = self.bootstrap_servers.split(":")[0].strip()
+                    try:
+                        sni_port = int(self.bootstrap_servers.split(":")[1].strip())
+                    except Exception:
+                        sni_port = 15321
+                    loop = asyncio.get_running_loop()
+                    orig_create_conn = getattr(loop, "_orig_create_conn", loop.create_connection)
+                    loop._orig_create_conn = orig_create_conn
+
+                    async def _sni_create_connection(*args, **kwargs):
+                        # Strictly target Kafka broker connections (port matching sni_port)
+                        dest_port = kwargs.get("port") or (args[2] if len(args) > 2 else None)
+                        if dest_port == sni_port and kwargs.get("ssl") and not kwargs.get("server_hostname"):
+                            kwargs["server_hostname"] = sni_host
+                        return await orig_create_conn(*args, **kwargs)
+
+                    loop.create_connection = _sni_create_connection
+
                 conn_kwargs = self._build_connection_kwargs()
                 logger.info(f"Connecting to Kafka cluster at {self.bootstrap_servers} (protocol: {settings.KAFKA_SECURITY_PROTOCOL})...")
                 self.producer = AIOKafkaProducer(
@@ -92,7 +122,10 @@ class KafkaBus:
                     group_id=settings.KAFKA_GROUP_ID,
                     client_id=f"{settings.KAFKA_CLIENT_ID}-consumer",
                     enable_auto_commit=False,
-                    auto_offset_reset="earliest",
+                    auto_offset_reset="latest",
+                    session_timeout_ms=30000,
+                    heartbeat_interval_ms=10000,
+                    max_poll_interval_ms=300000,
                     value_deserializer=lambda m: json.loads(m.decode("utf-8")),
                     key_deserializer=lambda k: k.decode("utf-8") if k else None,
                     **conn_kwargs,
@@ -125,11 +158,8 @@ class KafkaBus:
                     self.producer = None
 
         if not self.is_connected:
-            if not settings.KAFKA_ENABLED:
-                self._memory_dispatch_task = asyncio.create_task(self._dispatch_memory_events())
-                logger.info("In-memory asynchronous event bus active (Kafka disabled).")
-            else:
-                logger.error("Kafka is enabled but connection failed; in-memory fallback not started.")
+            self._memory_dispatch_task = asyncio.create_task(self._dispatch_memory_events())
+            logger.info("In-memory asynchronous event bus active (fallback mode).")
 
     async def stop(self) -> None:
         """Stop Kafka producer, consumer, and background tasks."""
@@ -226,7 +256,7 @@ class KafkaBus:
                                 await self.consumer.commit({tp: record.offset + 1})
                                 logger.debug(f"[Kafka Consumer] Committed offset {record.offset + 1} for '{topic}'")
                             except Exception as ce:
-                                logger.error(f"Error committing offset for '{topic}': {ce}")
+                                logger.warning(f"[Kafka Consumer] Offset commit notice for '{topic}' (offset {record.offset + 1}): {ce}")
                         else:
                             # Route failed message to DLQ
                             logger.warning(f"Routing failed event from '{topic}' to DLQ: {error_reason}")
@@ -254,7 +284,10 @@ class KafkaBus:
                                 except Exception as le:
                                     logger.warning(f"Could not update ledger for DLQ event {granule_id}: {le}")
                                 # Commit poison pill after recording in DLQ to prevent pipeline stall
-                                await self.consumer.commit({tp: record.offset + 1})
+                                try:
+                                    await self.consumer.commit({tp: record.offset + 1})
+                                except Exception as ce:
+                                    logger.warning(f"DLQ offset commit notice: {ce}")
                             except Exception as dlq_err:
                                 logger.error(f"Failed to publish to DLQ or advance offset: {dlq_err}")
 

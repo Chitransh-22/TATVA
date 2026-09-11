@@ -3,7 +3,8 @@ import { weatherStore } from '../data/weatherStore';
 
 export function useWeatherWebSocket(
   selectedState,
-  selectedDistrict
+  selectedDistrict,
+  onReconnect
 ) {
   const [status, setStatus] = useState('connecting');
   const [telemetry, setTelemetry] = useState({
@@ -21,6 +22,12 @@ export function useWeatherWebSocket(
   const pingIntervalRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
   const isManuallyClosedRef = useRef(false);
+  const onReconnectRef = useRef(onReconnect);
+  const hasConnectedOnceRef = useRef(false);
+
+  useEffect(() => {
+    onReconnectRef.current = onReconnect;
+  }, [onReconnect]);
 
   // Latest subscription parameters in ref to avoid recreating connection
   const activeSubRef = useRef({
@@ -75,6 +82,13 @@ export function useWeatherWebSocket(
         const { state, district } = activeSubRef.current;
         sendSubscription(state, district);
 
+        // If this is a reconnection after disconnect, synchronize with backend 7-day snapshot
+        if (hasConnectedOnceRef.current && onReconnectRef.current) {
+          console.log('🔄 [WS Client] Reconnection detected. Triggering snapshot resync...');
+          onReconnectRef.current();
+        }
+        hasConnectedOnceRef.current = true;
+
         // Start 20s heartbeat ping
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = setInterval(() => {
@@ -93,20 +107,24 @@ export function useWeatherWebSocket(
             const batch = msg;
             const res = weatherStore.applyBatch(batch);
 
+            const countUpdated = (res.updated || 0) + (res.added || 0);
+            const countBatch = batch.updates ? batch.updates.length : (batch.data || batch.lat !== undefined ? 1 : 0);
+
             setTelemetry((prev) => ({
               ...prev,
               lastUpdateIst: batch.timestamp_ist || new Date().toLocaleTimeString(),
               lastUpdateIso: batch.timestamp,
               totalBatchesReceived: prev.totalBatchesReceived + 1,
-              totalPointsUpdated: prev.totalPointsUpdated + res.updated + res.added,
-              lastBatchPointsCount: (batch.updates ? batch.updates.length : 0),
+              totalPointsUpdated: prev.totalPointsUpdated + countUpdated,
+              lastBatchPointsCount: countBatch,
               lastPayloadSizeBytes: payloadSize,
               status: 'connected',
             }));
           } else if (msg.type === 'weather_remove') {
             const rem = msg;
-            if (rem.ids && rem.ids.length > 0) {
-              weatherStore.removeIds(rem.ids);
+            const idsToRemove = rem.ids || (rem.id ? [rem.id] : []);
+            if (idsToRemove.length > 0) {
+              weatherStore.removeIds(idsToRemove);
             }
           } else if (msg.type === 'subscribed') {
             console.log('📬 [WS Client] Subscription confirmed by server:', msg);

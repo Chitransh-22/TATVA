@@ -67,34 +67,38 @@ class GranuleDiscoveryService:
     def discover_from_pps_directory(
         self,
         year: Optional[int] = None,
-        month: Optional[int] = None
+        month: Optional[int] = None,
+        limit: int = 50,
     ) -> List[GranuleDiscoveredMessage]:
         """Scrape directory listing from NASA PPS text directory."""
         now = datetime.now(timezone.utc)
         year = year or now.year
         month = month or now.month
 
-        url = f"{settings.NASA_PPS_BASE_URL}/text/imerg/gis/{year}/{month:02d}/"
-        download_base = f"{settings.NASA_PPS_BASE_URL}/imerg/gis/{year}/{month:02d}/"
+        base_url = (settings.NASA_PPS_BASE_URL or "https://jsimpsonhttps.pps.eosdis.nasa.gov").rstrip("/")
+        url = f"{base_url}/text/imerg/gis/{year}/{month:02d}/"
+        download_base = f"{base_url}/imerg/gis/{year}/{month:02d}/"
 
-        logger.info(f"Querying NASA PPS directory: {url}")
+        verify_param = settings.get_nasa_ssl_verify()
+        logger.info(f"Querying NASA PPS directory: {url} (SSL verify: {verify_param})")
         discovered: List[GranuleDiscoveredMessage] = []
 
         try:
-            response = requests.get(url, auth=self.auth, timeout=30)
+            response = requests.get(url, auth=self.auth, timeout=30, verify=verify_param)
             if response.status_code != 200:
                 logger.warning(f"Failed to fetch PPS directory {url} - Status: {response.status_code}")
                 return discovered
 
             # Text format has lines with permissions, size, date, filename
-            lines = response.text.splitlines()
+            lines = [l for l in response.text.splitlines() if l.strip().endswith(".zip")]
+            # Most recent granules are at the end of the chronological PPS listing
+            if limit and len(lines) > limit:
+                lines = lines[-limit:]
             for line in lines:
                 parts = line.strip().split()
                 if not parts:
                     continue
                 raw_item = parts[-1]
-                if not raw_item.endswith(".zip"):
-                    continue
 
                 filename = raw_item.split("/")[-1]
                 parsed = parse_imerg_filename(filename)
@@ -119,6 +123,11 @@ class GranuleDiscoveryService:
                 discovered.append(msg)
 
             logger.info(f"Discovered {len(discovered)} granules from PPS directory.")
+        except requests.exceptions.SSLError as ssl_err:
+            logger.error(
+                f"SSL certificate verification failed for PPS directory {url}: {ssl_err}. "
+                "Ensure CA certificate is provided via NASA_SSL_CA_BUNDLE or REQUESTS_CA_BUNDLE."
+            )
         except Exception as e:
             logger.error(f"Error discovering granules from PPS directory: {e}")
 
@@ -136,9 +145,10 @@ class GranuleDiscoveryService:
             "limit": limit,
         }
         discovered: List[GranuleDiscoveredMessage] = []
+        verify_param = settings.get_nasa_ssl_verify()
 
         try:
-            response = requests.get(url, params=params, auth=self.auth, timeout=20)
+            response = requests.get(url, params=params, auth=self.auth, timeout=20, verify=verify_param)
             if response.status_code == 200 and "application/json" in response.headers.get("Content-Type", ""):
                 data = response.json()
                 items = data.get("items", []) or data.get("feed", {}).get("entry", [])
@@ -160,25 +170,37 @@ class GranuleDiscoveryService:
                             )
             else:
                 logger.info("OpenSearch response non-JSON or unavailable. Falling back to PPS directory.")
+        except requests.exceptions.SSLError as ssl_err:
+            logger.warning(
+                f"OpenSearch SSL certificate verification failed ({ssl_err}). "
+                "Verify NASA_SSL_CA_BUNDLE or REQUESTS_CA_BUNDLE. Falling back to PPS directory."
+            )
         except Exception as e:
             logger.warning(f"OpenSearch query failed ({e}). Falling back to PPS text directory.")
 
         return discovered
 
-    async def run_discovery(self, emit_to_kafka: bool = True) -> List[GranuleDiscoveredMessage]:
+    async def run_discovery(self, emit_to_kafka: bool = True, limit: int = 20) -> List[GranuleDiscoveredMessage]:
         """Execute discovery and publish events to Kafka."""
-        granules = await asyncio.to_thread(self.discover_from_opensearch)
+        granules = await asyncio.to_thread(self.discover_from_opensearch, limit=limit)
         if not granules:
-            granules = await asyncio.to_thread(self.discover_from_pps_directory)
+            granules = await asyncio.to_thread(self.discover_from_pps_directory, limit=limit)
 
         if emit_to_kafka and granules:
+            emitted_count = 0
+            from app.ingestion.deduplication import dedup_ledger
             for g in granules:
+                entry = await dedup_ledger.register_discovered(g)
+                if entry and entry.status in ("COMPLETED", "PERSISTED"):
+                    logger.debug(f"[Discovery] Granule {g.granule_id} already {entry.status} in ledger. Skipping Kafka event.")
+                    continue
                 await kafka_bus.publish(
                     topic=TOPIC_GRANULES_DISCOVERED,
                     key=g.granule_id,
                     payload=g.model_dump(),
                 )
-            logger.info(f"Emitted {len(granules)} discovery events to topic '{TOPIC_GRANULES_DISCOVERED}'.")
+                emitted_count += 1
+            logger.info(f"Emitted {emitted_count} discovery events to topic '{TOPIC_GRANULES_DISCOVERED}' (out of {len(granules)} discovered).")
 
         return granules
 
