@@ -71,7 +71,15 @@ class IngestionScheduler:
 
         try:
             async with AsyncSessionLocal() as session:
-                # Delete observations older than 7 days using the observation_time index
+                # Determine anchor T for rolling 7-day retention
+                latest_res = await session.execute(text(
+                    "SELECT MAX(observation_time) FROM precipitation_observations WHERE latitude >= 6.0;"
+                ))
+                latest_obs = latest_res.scalar()
+                ref_time = latest_obs if latest_obs else now
+                cutoff = ref_time - timedelta(days=days)
+
+                # Delete observations older than T - 7 days using the observation_time index
                 # PostgreSQL RETURNING allows discovering exact point IDs removed
                 delete_query = text("""
                     DELETE FROM precipitation_observations

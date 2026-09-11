@@ -553,7 +553,7 @@ async def get_india_overview(
                 COALESCE(MAX(granule_id), 'IMERG-7DAY') as gid,
                 MAX(observation_time) as latest_time
             FROM precipitation_observations
-            WHERE observation_time >= :cutoff AND observation_time <= :now;
+            WHERE observation_time >= :cutoff AND observation_time <= :now AND latitude >= 6.0;
         """), {"cutoff": cutoff, "now": now})
         c = nat_calc.first()
 
@@ -562,7 +562,7 @@ async def get_india_overview(
 
         # If no records in current [now - 7d, now] window, check if older historical data exists
         if total_pts == 0:
-            latest_db_res = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations;"))
+            latest_db_res = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations WHERE latitude >= 6.0;"))
             db_latest = latest_db_res.scalar_one_or_none()
             if db_latest:
                 # Anchor the 7-day window to the most recent data available
@@ -577,7 +577,7 @@ async def get_india_overview(
                         COALESCE(MAX(granule_id), 'IMERG-7DAY') as gid,
                         MAX(observation_time) as latest_time
                     FROM precipitation_observations
-                    WHERE observation_time >= :cutoff AND observation_time <= :now;
+                    WHERE observation_time >= :cutoff AND observation_time <= :now AND latitude >= 6.0;
                 """), {"cutoff": cutoff, "now": now})
                 c = nat_calc.first()
                 latest_time = c.latest_time if c else db_latest

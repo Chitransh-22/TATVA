@@ -11,12 +11,24 @@ function slugify(text) {
 let cachedIndiaBoundaryGeoJson = null;
 let cachedIndiaStatesGeoJson = null;
 const cachedDistrictsGeoJsonMap = {};
+const boundaryListeners = new Set();
+
+function notifyBoundaryListeners() {
+  boundaryListeners.forEach((cb) => {
+    try {
+      cb();
+    } catch (e) {
+      console.warn('Boundary listener error:', e);
+    }
+  });
+}
 
 // Immediately initiate background prefetch of official India boundary
 fetch('/data/india_boundary.geojson')
   .then((res) => res.json())
   .then((data) => {
     cachedIndiaBoundaryGeoJson = data;
+    notifyBoundaryListeners();
   })
   .catch((e) => console.warn('Boundary preload error:', e));
 
@@ -24,6 +36,7 @@ fetch('/data/india_states.geojson')
   .then((res) => res.json())
   .then((data) => {
     cachedIndiaStatesGeoJson = data;
+    notifyBoundaryListeners();
   })
   .catch((e) => console.warn('States preload error:', e));
 
@@ -35,11 +48,17 @@ function addGeometryToCanvasPath(ctx, map, geom) {
 
   const traceRing = (ring) => {
     if (!ring || ring.length === 0) return;
+    let first = true;
     for (let p = 0; p < ring.length; p++) {
-      const [lon, lat] = ring[p];
+      const coord = ring[p];
+      if (!coord || coord.length < 2) continue;
+      const lon = coord[0];
+      const lat = coord[1];
+      if (lon == null || lat == null || isNaN(lon) || isNaN(lat)) continue;
       const pt = map.latLngToContainerPoint([lat, lon]);
-      if (p === 0) {
+      if (first) {
         ctx.moveTo(pt.x, pt.y);
+        first = false;
       } else {
         ctx.lineTo(pt.x, pt.y);
       }
@@ -66,6 +85,10 @@ function addGeometryToCanvasPath(ctx, map, geom) {
       for (let r = 0; r < poly.length; r++) {
         traceRing(poly[r]);
       }
+    }
+  } else if (geomType === 'GeometryCollection' && Array.isArray(geom.geometries)) {
+    for (let i = 0; i < geom.geometries.length; i++) {
+      addGeometryToCanvasPath(ctx, map, geom.geometries[i]);
     }
   }
 }
@@ -191,6 +214,7 @@ export function WeatherMap({
         try {
           const res = await fetch('/data/india_boundary.geojson');
           cachedIndiaBoundaryGeoJson = await res.json();
+          notifyBoundaryListeners();
         } catch (e) {
           console.warn('Could not load national boundary:', e);
         }
@@ -199,6 +223,7 @@ export function WeatherMap({
         if (!nationalOutlineLayerRef.current) {
           nationalOutlineLayerRef.current = L.geoJSON(cachedIndiaBoundaryGeoJson, {
             pane: 'boundaryPane',
+            interactive: false,
             style: {
               color: '#334155',
               weight: 1.3,
@@ -217,6 +242,12 @@ export function WeatherMap({
     };
     loadNationalBoundary();
 
+    // Map mousemove listener: Reset inspector when moving outside interactive features (ocean / foreign terrain)
+    map.on('mousemove', () => {
+      // Hovering inside India is handled by state and district layers.
+      // If cursor is on empty map space (ocean/outside India), keep inspector clean.
+    });
+
     // Observe container resize to seamlessly invalidate Leaflet dimensions
     const resizeObserver = new ResizeObserver(() => {
       map.invalidateSize();
@@ -233,10 +264,10 @@ export function WeatherMap({
       map.remove();
       mapRef.current = null;
     };
-  }, []);
+  }, [updateInspector, resetInspector]);
 
   // ---------------------------------------------------------------------------
-  // 3. Strict Boundary-Clipped Hardware Canvas Weather Layer
+  // 3. Hardware Canvas Weather Layer
   // ---------------------------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
@@ -260,6 +291,8 @@ export function WeatherMap({
 
         const targetPane = leafletMap.getPane('weatherCanvasPane') || leafletMap.getPanes().overlayPane;
         targetPane.appendChild(this._canvas);
+
+        console.log('🗺️ [MAP LAYER] CanvasWeatherLayer created and added to map pane: weatherCanvasPane (layer created: true, layer added to map: true)');
 
         leafletMap.on('moveend zoomend resize viewreset', this._draw, this);
         this._draw();
@@ -303,7 +336,7 @@ export function WeatherMap({
         ctx.globalAlpha = curOpacity;
 
         // -------------------------------------------------------------
-        // STRICT BOUNDARY CLIPPING TO INDIA / STATE / DISTRICT
+        // GEOGRAPHIC BOUNDARY CLIPPING: DISTRICT -> STATE -> INDIA
         // -------------------------------------------------------------
         let clipGeometry = null;
 
@@ -319,6 +352,7 @@ export function WeatherMap({
           }
         }
 
+        // Fallback to state boundary if district boundary is not yet available
         if (!clipGeometry && curState) {
           if (cachedIndiaStatesGeoJson?.features) {
             const feat = cachedIndiaStatesGeoJson.features.find((f) => {
@@ -329,24 +363,68 @@ export function WeatherMap({
           }
         }
 
-        // Fallback to official India national boundary
+        // Fallback to national India boundary (National view or fallback)
         if (!clipGeometry) {
           clipGeometry = cachedIndiaBoundaryGeoJson;
         }
 
-        // Strict geometric clip path: Discards ANY raster pixels outside India
-        if (clipGeometry) {
-          ctx.beginPath();
-          addGeometryToCanvasPath(ctx, this._map, clipGeometry);
-          ctx.clip('evenodd');
-        } else {
-          // If boundary not loaded yet, wait for boundary load before rendering
+        // Defer drawing if boundary geometry is not yet in memory.
+        // This strictly prevents the unclipped rectangular raster flash.
+        if (!clipGeometry) {
           ctx.restore();
           return;
         }
 
+        // Trace and apply strict vector clipping path
+        ctx.beginPath();
+        addGeometryToCanvasPath(ctx, this._map, clipGeometry);
+        ctx.clip('evenodd');
+
         // -------------------------------------------------------------
-        // RENDER WEATHER PRECIPITATION PIXELS
+        // SELECT ACTIVE OBSERVATIONS / GRID POINTS
+        // -------------------------------------------------------------
+        let points = [];
+        let step = 0.5;
+
+        if (curDist) {
+          step = 0.1;
+          const storePts = weatherStore.getRecords(true);
+          if (storePts && storePts.length > 0) {
+            points = storePts;
+          } else if (curDistData?.observations?.length) {
+            points = curDistData.observations;
+          }
+        } else if (curState) {
+          step = 0.1;
+          const storePts = weatherStore.getRecords(true);
+          if (storePts && storePts.length > 0) {
+            points = storePts;
+          } else if (curStateData?.observations?.length) {
+            points = curStateData.observations;
+          }
+        } else {
+          // National Overview: Prioritize store, fall back to grid_points or observations
+          step = curOverview?.grid_step || 0.5;
+          const storeMap = weatherStore.getRecordsMap();
+          if (storeMap.size > 0) {
+            points = Array.from(storeMap.values());
+          }
+
+          // If store has only dry/zero points, fall back directly to overview grid_points
+          const nonZeroCount = points.filter((pt) => {
+            const p = pt.precipitation !== undefined ? pt.precipitation : pt[2];
+            return (p || 0) >= 0.1;
+          }).length;
+
+          if (nonZeroCount === 0 && curOverview?.grid_points?.length) {
+            points = curOverview.grid_points;
+          } else if (points.length === 0 && curOverview?.observations?.length) {
+            points = curOverview.observations;
+          }
+        }
+
+        // -------------------------------------------------------------
+        // RENDER WEATHER PRECIPITATION CELLS (Viewport Culled)
         // -------------------------------------------------------------
         const mapBounds = this._map.getBounds();
         const south = mapBounds.getSouth();
@@ -354,102 +432,46 @@ export function WeatherMap({
         const west = mapBounds.getWest();
         const east = mapBounds.getEast();
 
-        // Check if weatherStore has active incremental records for current view
-        const storeMap = weatherStore.getRecordsMap();
-        if (storeMap.size > 0) {
-          const step = (curDist || curState) ? 0.1 : 0.5;
-          storeMap.forEach((pt) => {
-            const p = pt.precipitation;
-            if (p < 0.1) return;
+        let renderedCount = 0;
+        let validCoordCount = 0;
+        let validRainCount = 0;
+        let minRain = Infinity;
+        let maxRain = -Infinity;
 
-            const lat = pt.latitude;
-            const lon = pt.longitude;
-            if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
-              return;
-            }
+        for (let i = 0; i < points.length; i++) {
+          const pt = points[i];
+          const lat = pt.latitude !== undefined ? pt.latitude : pt[0];
+          const lon = pt.longitude !== undefined ? pt.longitude : pt[1];
+          const p = pt.precipitation !== undefined ? pt.precipitation : pt[2];
 
-            const nw = this._map.latLngToContainerPoint([lat + step / 2, lon - step / 2]);
-            const se = this._map.latLngToContainerPoint([lat - step / 2, lon + step / 2]);
-            const w = Math.ceil(se.x - nw.x);
-            const h = Math.ceil(se.y - nw.y);
+          if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) continue;
+          validCoordCount++;
 
-            ctx.fillStyle = getPrecipitationColor(p);
-            ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
-          });
-        }
-        // Fallback to snapshot props data if store is loading or empty
-        // 1. District View Fallback
-        else if (curDist && curDistData?.observations?.length) {
-          const obs = curDistData.observations;
-          const step = 0.1;
-          for (let i = 0; i < obs.length; i++) {
-            const pt = obs[i];
-            const p = pt.precipitation;
-            if (p < 0.1) continue;
+          if (p == null || isNaN(p) || p < 0.1) continue;
+          validRainCount++;
+          if (p < minRain) minRain = p;
+          if (p > maxRain) maxRain = p;
 
-            const lat = pt.latitude;
-            const lon = pt.longitude;
-            if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
-              continue;
-            }
-
-            const nw = this._map.latLngToContainerPoint([lat + step / 2, lon - step / 2]);
-            const se = this._map.latLngToContainerPoint([lat - step / 2, lon + step / 2]);
-            const w = Math.ceil(se.x - nw.x);
-            const h = Math.ceil(se.y - nw.y);
-
-            ctx.fillStyle = getPrecipitationColor(p);
-            ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
+          // Viewport culling to visible area + margin
+          if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
+            continue;
           }
-        }
-        // 2. State View Fallback
-        else if (curState && curStateData?.observations?.length) {
-          const obs = curStateData.observations;
-          const step = 0.1;
-          for (let i = 0; i < obs.length; i++) {
-            const pt = obs[i];
-            const p = pt.precipitation;
-            if (p < 0.1) continue;
 
-            const lat = pt.latitude;
-            const lon = pt.longitude;
-            if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
-              continue;
-            }
+          const nw = this._map.latLngToContainerPoint([lat + step / 2, lon - step / 2]);
+          const se = this._map.latLngToContainerPoint([lat - step / 2, lon + step / 2]);
+          const x = Math.min(nw.x, se.x);
+          const y = Math.min(nw.y, se.y);
+          const w = Math.max(Math.ceil(Math.abs(se.x - nw.x)), 2);
+          const h = Math.max(Math.ceil(Math.abs(se.y - nw.y)), 2);
 
-            const nw = this._map.latLngToContainerPoint([lat + step / 2, lon - step / 2]);
-            const se = this._map.latLngToContainerPoint([lat - step / 2, lon + step / 2]);
-            const w = Math.ceil(se.x - nw.x);
-            const h = Math.ceil(se.y - nw.y);
-
-            ctx.fillStyle = getPrecipitationColor(p);
-            ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
-          }
-        }
-        // 3. National Overview Fallback
-        else if (curOverview?.grid_points?.length) {
-          const gridPoints = curOverview.grid_points;
-          const step = curOverview.grid_step || 0.5;
-
-          for (let i = 0; i < gridPoints.length; i++) {
-            const [lat, lon, precip] = gridPoints[i];
-            if (precip < 0.1) continue;
-
-            if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
-              continue;
-            }
-
-            const nw = this._map.latLngToContainerPoint([lat + step / 2, lon - step / 2]);
-            const se = this._map.latLngToContainerPoint([lat - step / 2, lon + step / 2]);
-            const w = Math.ceil(se.x - nw.x);
-            const h = Math.ceil(se.y - nw.y);
-
-            ctx.fillStyle = getPrecipitationColor(precip);
-            ctx.fillRect(Math.floor(nw.x), Math.floor(nw.y), w, h);
-          }
+          ctx.fillStyle = getPrecipitationColor(p);
+          ctx.fillRect(Math.floor(x), Math.floor(y), w, h);
+          renderedCount++;
         }
 
         ctx.restore();
+
+        console.log(`🎨 [MAP LAYER] Rendered ${renderedCount} cells (layer on map: true, total points: ${points.length}, validCoords: ${validCoordCount}, validRain: ${validRainCount}, minRain: ${minRain === Infinity ? 0 : minRain.toFixed(1)}, maxRain: ${maxRain === -Infinity ? 0 : maxRain.toFixed(1)})`);
       },
     });
 
@@ -465,7 +487,7 @@ export function WeatherMap({
     };
   }, [overviewData, stateData, districtData, selectedState, selectedDistrict, opacity]);
 
-  // Trigger throttled canvas redraw whenever data changes or WebSocket increments arrive
+  // Trigger throttled canvas redraw whenever data changes, boundaries load, or WebSocket increments arrive
   useEffect(() => {
     let animFrame = null;
     const requestRedraw = () => {
@@ -485,9 +507,15 @@ export function WeatherMap({
       requestRedraw();
     });
 
+    const onBoundaryLoaded = () => {
+      requestRedraw();
+    };
+    boundaryListeners.add(onBoundaryLoaded);
+
     return () => {
       if (animFrame) cancelAnimationFrame(animFrame);
       unsubscribe();
+      boundaryListeners.delete(onBoundaryLoaded);
     };
   }, [overviewData, stateData, districtData, selectedState, selectedDistrict, opacity]);
 
@@ -525,8 +553,8 @@ export function WeatherMap({
             color: isSelected ? '#0284c7' : defaultBorderColor,
             weight: isSelected ? 2.2 : 0.85,
             opacity: isSelected ? 0.95 : 0.65,
-            fillColor: isSelected ? '#38bdf8' : 'transparent',
-            fillOpacity: isSelected ? 0.08 : 0,
+            fillColor: isSelected ? '#38bdf8' : '#ffffff',
+            fillOpacity: isSelected ? 0.08 : 0.001,
           };
         },
         onEachFeature: (feature, l) => {
@@ -555,6 +583,19 @@ export function WeatherMap({
             }
           );
 
+          const getCellRain = (latlng) => {
+            const { overviewData: ov } = renderDataRef.current;
+            const grid = ov?.grid_points;
+            if (grid?.length) {
+              const step = ov?.grid_step || 0.5;
+              const cell = grid.find(
+                ([cLat, cLon]) => Math.abs(cLat - latlng.lat) <= step / 2 && Math.abs(cLon - latlng.lng) <= step / 2
+              );
+              if (cell && cell[2] >= 0.1) return cell[2];
+            }
+            return summary ? summary.avg_precipitation : null;
+          };
+
           l.on({
             mouseover: (e) => {
               const targetLayer = e.target;
@@ -563,14 +604,24 @@ export function WeatherMap({
                   color: '#0284c7',
                   weight: 1.8,
                   opacity: 0.95,
-                  fillOpacity: 0,
+                  fillOpacity: 0.05,
                 });
               }
+              const rain = getCellRain(e.latlng);
               updateInspector(
                 stName,
                 Number(e.latlng.lat.toFixed(2)),
                 Number(e.latlng.lng.toFixed(2)),
-                summary ? summary.avg_precipitation : null
+                rain
+              );
+            },
+            mousemove: (e) => {
+              const rain = getCellRain(e.latlng);
+              updateInspector(
+                stName,
+                Number(e.latlng.lat.toFixed(2)),
+                Number(e.latlng.lng.toFixed(2)),
+                rain
               );
             },
             mouseout: (e) => {
@@ -579,8 +630,8 @@ export function WeatherMap({
                 color: isSelected ? '#0284c7' : defaultBorderColor,
                 weight: isSelected ? 2.2 : 0.85,
                 opacity: isSelected ? 0.95 : 0.65,
-                fillColor: isSelected ? '#38bdf8' : 'transparent',
-                fillOpacity: isSelected ? 0.08 : 0,
+                fillColor: isSelected ? '#38bdf8' : '#ffffff',
+                fillOpacity: isSelected ? 0.08 : 0.001,
               });
               resetInspector();
             },
@@ -608,6 +659,7 @@ export function WeatherMap({
         .then((res) => res.json())
         .then((geojson) => {
           cachedIndiaStatesGeoJson = geojson;
+          notifyBoundaryListeners();
           initStates(geojson);
         })
         .catch((err) => console.warn('Could not load states geojson:', err));
@@ -651,8 +703,8 @@ export function WeatherMap({
             color: isSelected ? '#0284c7' : defaultBorderColor,
             weight: isSelected ? 2.0 : 0.75,
             opacity: isSelected ? 0.95 : 0.55,
-            fillColor: isSelected ? '#38bdf8' : 'transparent',
-            fillOpacity: isSelected ? 0.08 : 0,
+            fillColor: isSelected ? '#38bdf8' : '#ffffff',
+            fillOpacity: isSelected ? 0.08 : 0.001,
           };
         },
         onEachFeature: (feature, l) => {
@@ -689,9 +741,17 @@ export function WeatherMap({
                   color: '#0284c7',
                   weight: 1.6,
                   opacity: 0.95,
-                  fillOpacity: 0,
+                  fillOpacity: 0.05,
                 });
               }
+              updateInspector(
+                `${distName}, ${selectedState}`,
+                Number(e.latlng.lat.toFixed(2)),
+                Number(e.latlng.lng.toFixed(2)),
+                summary ? summary.avg_precipitation : null
+              );
+            },
+            mousemove: (e) => {
               updateInspector(
                 `${distName}, ${selectedState}`,
                 Number(e.latlng.lat.toFixed(2)),
@@ -705,8 +765,8 @@ export function WeatherMap({
                 color: isSelected ? '#0284c7' : defaultBorderColor,
                 weight: isSelected ? 2.0 : 0.75,
                 opacity: isSelected ? 0.95 : 0.55,
-                fillColor: isSelected ? '#38bdf8' : 'transparent',
-                fillOpacity: isSelected ? 0.08 : 0,
+                fillColor: isSelected ? '#38bdf8' : '#ffffff',
+                fillOpacity: isSelected ? 0.08 : 0.001,
               });
               resetInspector();
             },
@@ -742,6 +802,7 @@ export function WeatherMap({
         })
         .then((geojson) => {
           cachedDistrictsGeoJsonMap[stateSlug] = geojson;
+          notifyBoundaryListeners();
           initDistricts(geojson);
         })
         .catch((err) => {

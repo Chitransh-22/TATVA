@@ -112,14 +112,16 @@ export function App() {
     const cacheKey = time || 'latest';
     if (overviewCacheRef.current.has(cacheKey)) {
       const cached = overviewCacheRef.current.get(cacheKey);
-      const snapshotPoints = cached.observations && cached.observations.length > 0
-        ? cached.observations
-        : (cached.grid_points
-            ? cached.grid_points.map(([lat, lon, precip]) => ({
-                latitude: lat,
-                longitude: lon,
-                precipitation: precip,
-              }))
+      const snapshotPoints = cached.grid_points && cached.grid_points.length > 0
+        ? cached.grid_points.map(([lat, lon, precip]) => ({
+            id: weatherStore.makeId(lat, lon),
+            latitude: lat,
+            longitude: lon,
+            precipitation: precip,
+            timestamp: cached.observation_time,
+          }))
+        : (cached.observations && cached.observations.length > 0
+            ? cached.observations
             : []);
       weatherStore.loadSnapshot(
         { state: null, district: null },
@@ -158,15 +160,41 @@ export function App() {
         };
       }
       overviewCacheRef.current.set(cacheKey, data);
-      const snapshotPoints = data.observations && data.observations.length > 0
-        ? data.observations
-        : (data.grid_points
-            ? data.grid_points.map(([lat, lon, precip]) => ({
-                latitude: lat,
-                longitude: lon,
-                precipitation: precip,
-              }))
+
+      // Diagnostic logging per Requirement 2
+      console.log('🌧️ [RAIN API RESPONSE]', {
+        keys: Object.keys(data),
+        recordCount: data.grid_points?.length || data.observations?.length || 0,
+        firstRecord: data.grid_points?.[0] || data.observations?.[0] || null,
+        lastRecord: data.grid_points?.[data.grid_points.length - 1] || data.observations?.[data.observations.length - 1] || null,
+        nationalSummary: data.national_summary,
+      });
+
+      // Transform grid_points covering all India into structured store records
+      const snapshotPoints = data.grid_points && data.grid_points.length > 0
+        ? data.grid_points.map(([lat, lon, precip]) => ({
+            id: weatherStore.makeId(lat, lon),
+            latitude: lat,
+            longitude: lon,
+            precipitation: precip,
+            timestamp: data.observation_time,
+          }))
+        : (data.observations && data.observations.length > 0
+            ? data.observations
             : []);
+
+      const validCoords = snapshotPoints.filter((p) => p.latitude != null && p.longitude != null && !isNaN(p.latitude));
+      const validRain = snapshotPoints.filter((p) => (p.precipitation || 0) >= 0.1);
+      const rainVals = validRain.map((p) => p.precipitation);
+
+      console.log('🗺️ [MAP DATA]', {
+        transformedRecordCount: snapshotPoints.length,
+        validCoordinateCount: validCoords.length,
+        validRainfallCount: validRain.length,
+        minRainfall: rainVals.length > 0 ? Math.min(...rainVals) : 0,
+        maxRainfall: rainVals.length > 0 ? Math.max(...rainVals) : 0,
+      });
+
       weatherStore.loadSnapshot(
         { state: null, district: null },
         snapshotPoints,

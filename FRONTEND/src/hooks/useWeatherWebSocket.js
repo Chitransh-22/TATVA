@@ -61,6 +61,11 @@ export function useWeatherWebSocket(
   const connect = useCallback(() => {
     if (isManuallyClosedRef.current) return;
 
+    // Prevent duplicate or concurrent active connections
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
     // Build WebSocket URL
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
@@ -174,11 +179,26 @@ export function useWeatherWebSocket(
 
     return () => {
       isManuallyClosedRef.current = true;
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       if (wsRef.current) {
-        wsRef.current.close(1000, 'Component unmounted');
+        const ws = wsRef.current;
         wsRef.current = null;
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        try {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close(1000, 'Component unmounted');
+          }
+        } catch (_) {}
       }
     };
   }, [connect]);
