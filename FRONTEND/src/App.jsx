@@ -14,10 +14,33 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import './App.css';
 
 export function App() {
-  // Navigation & Selection State
-  const [selectedState, setSelectedState] = useState(null);
-  const [selectedDistrict, setSelectedDistrict] = useState(null);
+  // Single Source of Truth for Map Navigation State
+  const [navState, setNavState] = useState({
+    mapLevel: 'india', // 'india' | 'state' | 'district'
+    selectedState: null,
+    selectedDistrict: null,
+  });
+  const { mapLevel, selectedState, selectedDistrict } = navState;
   const [selectedTime, setSelectedTime] = useState(null);
+
+  // Global request generation counter to prevent stale async API responses from overwriting map
+  const navRequestIdRef = useRef(0);
+
+  // Helper to abort all in-flight requests on rapid navigation clicks
+  const abortAllInFlight = useCallback(() => {
+    if (overviewAbortRef.current) {
+      overviewAbortRef.current.abort();
+      overviewAbortRef.current = null;
+    }
+    if (stateAbortRef.current) {
+      stateAbortRef.current.abort();
+      stateAbortRef.current = null;
+    }
+    if (districtAbortRef.current) {
+      districtAbortRef.current.abort();
+      districtAbortRef.current = null;
+    }
+  }, []);
 
   // Single Persistent WebSocket Hook (Incremental updates, auto-reconnect, heartbeat)
   const reconnectHandlerRef = useRef(null);
@@ -71,10 +94,10 @@ export function App() {
   const districtAbortRef = useRef(null);
 
   // Ref to track latest selection for SSE live updates
-  const selectionRef = useRef({ selectedState, selectedDistrict, selectedTime });
+  const selectionRef = useRef({ mapLevel, selectedState, selectedDistrict, selectedTime });
   useEffect(() => {
-    selectionRef.current = { selectedState, selectedDistrict, selectedTime };
-  }, [selectedState, selectedDistrict, selectedTime]);
+    selectionRef.current = { mapLevel, selectedState, selectedDistrict, selectedTime };
+  }, [mapLevel, selectedState, selectedDistrict, selectedTime]);
 
   // =========================================================================
   // API Fetch Functions
@@ -109,9 +132,18 @@ export function App() {
   }, []);
 
   const fetchOverview = useCallback(async (time) => {
+    const requestId = ++navRequestIdRef.current;
+    abortAllInFlight();
+
+    console.log(`[REQUEST #${requestId}] mapLevel=india, time=${time || 'latest'}`);
+
     const cacheKey = time || 'latest';
     if (overviewCacheRef.current.has(cacheKey)) {
       const cached = overviewCacheRef.current.get(cacheKey);
+      if (requestId !== navRequestIdRef.current) {
+        console.log(`[REQUEST #${requestId} IGNORED] Stale overview cache response ignored.`);
+        return;
+      }
       const snapshotPoints = cached.grid_points && cached.grid_points.length > 0
         ? cached.grid_points.map(([lat, lon, precip]) => ({
             id: weatherStore.makeId(lat, lon),
@@ -134,9 +166,6 @@ export function App() {
       return;
     }
 
-    if (overviewAbortRef.current) {
-      overviewAbortRef.current.abort();
-    }
     const controller = new AbortController();
     overviewAbortRef.current = controller;
 
@@ -150,6 +179,13 @@ export function App() {
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+
+      // Guard: Stale request protection
+      if (requestId !== navRequestIdRef.current) {
+        console.log(`[REQUEST #${requestId} IGNORED] Stale overview response ignored. Current request is #${navRequestIdRef.current}`);
+        return;
+      }
+
       if (!data.national_summary || typeof data.national_summary !== 'object') {
         data.national_summary = {
           avg_precipitation: 0.0,
@@ -161,16 +197,6 @@ export function App() {
       }
       overviewCacheRef.current.set(cacheKey, data);
 
-      // Diagnostic logging per Requirement 2
-      console.log('🌧️ [RAIN API RESPONSE]', {
-        keys: Object.keys(data),
-        recordCount: data.grid_points?.length || data.observations?.length || 0,
-        firstRecord: data.grid_points?.[0] || data.observations?.[0] || null,
-        lastRecord: data.grid_points?.[data.grid_points.length - 1] || data.observations?.[data.observations.length - 1] || null,
-        nationalSummary: data.national_summary,
-      });
-
-      // Transform grid_points covering all India into structured store records
       const snapshotPoints = data.grid_points && data.grid_points.length > 0
         ? data.grid_points.map(([lat, lon, precip]) => ({
             id: weatherStore.makeId(lat, lon),
@@ -183,18 +209,6 @@ export function App() {
             ? data.observations
             : []);
 
-      const validCoords = snapshotPoints.filter((p) => p.latitude != null && p.longitude != null && !isNaN(p.latitude));
-      const validRain = snapshotPoints.filter((p) => (p.precipitation || 0) >= 0.1);
-      const rainVals = validRain.map((p) => p.precipitation);
-
-      console.log('🗺️ [MAP DATA]', {
-        transformedRecordCount: snapshotPoints.length,
-        validCoordinateCount: validCoords.length,
-        validRainfallCount: validRain.length,
-        minRainfall: rainVals.length > 0 ? Math.min(...rainVals) : 0,
-        maxRainfall: rainVals.length > 0 ? Math.max(...rainVals) : 0,
-      });
-
       weatherStore.loadSnapshot(
         { state: null, district: null },
         snapshotPoints,
@@ -204,19 +218,30 @@ export function App() {
       fetchHistorical(null, null);
     } catch (err) {
       if (err.name === 'AbortError') return;
+      if (requestId !== navRequestIdRef.current) return;
       console.error('Failed to load India overview:', err);
       setError('Unable to load India weather overview. Please ensure the backend is running.');
     } finally {
-      if (overviewAbortRef.current === controller) {
+      if (requestId === navRequestIdRef.current) {
         setIsLoading(false);
       }
     }
-  }, [fetchHistorical]);
+  }, [abortAllInFlight, fetchHistorical]);
 
   const fetchState = useCallback(async (stateName, time) => {
+    if (!stateName) return;
+    const requestId = ++navRequestIdRef.current;
+    abortAllInFlight();
+
+    console.log(`[REQUEST #${requestId}] mapLevel=state, state=${stateName}, time=${time || 'latest'}`);
+
     const cacheKey = `${stateName.toLowerCase()}_${time || 'latest'}`;
     if (stateCacheRef.current.has(cacheKey)) {
       const cached = stateCacheRef.current.get(cacheKey);
+      if (requestId !== navRequestIdRef.current) {
+        console.log(`[REQUEST #${requestId} IGNORED] Stale state cache hit ignored (${stateName}).`);
+        return;
+      }
       weatherStore.loadSnapshot(
         { state: stateName, district: null },
         cached.observations || [],
@@ -228,9 +253,6 @@ export function App() {
       return;
     }
 
-    if (stateAbortRef.current) {
-      stateAbortRef.current.abort();
-    }
     const controller = new AbortController();
     stateAbortRef.current = controller;
 
@@ -244,6 +266,13 @@ export function App() {
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+
+      // Guard: Stale request protection
+      if (requestId !== navRequestIdRef.current) {
+        console.log(`[REQUEST #${requestId} IGNORED] Stale state response ignored (${stateName}). Current request is #${navRequestIdRef.current}`);
+        return;
+      }
+
       stateCacheRef.current.set(cacheKey, data);
       weatherStore.loadSnapshot(
         { state: stateName, district: null },
@@ -254,19 +283,30 @@ export function App() {
       fetchHistorical(stateName, null);
     } catch (err) {
       if (err.name === 'AbortError') return;
+      if (requestId !== navRequestIdRef.current) return;
       console.error(`Failed to load state ${stateName}:`, err);
       setError(`Unable to load observations for ${stateName}.`);
     } finally {
-      if (stateAbortRef.current === controller) {
+      if (requestId === navRequestIdRef.current) {
         setIsLoading(false);
       }
     }
-  }, [fetchHistorical]);
+  }, [abortAllInFlight, fetchHistorical]);
 
   const fetchDistrict = useCallback(async (stateName, districtName, time) => {
+    if (!stateName || !districtName) return;
+    const requestId = ++navRequestIdRef.current;
+    abortAllInFlight();
+
+    console.log(`[REQUEST #${requestId}] mapLevel=district, state=${stateName}, district=${districtName}, time=${time || 'latest'}`);
+
     const cacheKey = `${stateName.toLowerCase()}_${districtName.toLowerCase()}_${time || 'latest'}`;
     if (districtCacheRef.current.has(cacheKey)) {
       const cached = districtCacheRef.current.get(cacheKey);
+      if (requestId !== navRequestIdRef.current) {
+        console.log(`[REQUEST #${requestId} IGNORED] Stale district cache hit ignored (${districtName}).`);
+        return;
+      }
       weatherStore.loadSnapshot(
         { state: stateName, district: districtName },
         cached.observations || [],
@@ -278,9 +318,6 @@ export function App() {
       return;
     }
 
-    if (districtAbortRef.current) {
-      districtAbortRef.current.abort();
-    }
     const controller = new AbortController();
     districtAbortRef.current = controller;
 
@@ -294,6 +331,13 @@ export function App() {
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+
+      // Guard: Stale request protection
+      if (requestId !== navRequestIdRef.current) {
+        console.log(`[REQUEST #${requestId} IGNORED] Stale district response ignored (${districtName}). Current request is #${navRequestIdRef.current}`);
+        return;
+      }
+
       districtCacheRef.current.set(cacheKey, data);
       weatherStore.loadSnapshot(
         { state: stateName, district: districtName },
@@ -304,14 +348,15 @@ export function App() {
       fetchHistorical(stateName, districtName);
     } catch (err) {
       if (err.name === 'AbortError') return;
+      if (requestId !== navRequestIdRef.current) return;
       console.error(`Failed to load district ${districtName}:`, err);
       setError(`Unable to load observations for ${districtName}.`);
     } finally {
-      if (districtAbortRef.current === controller) {
+      if (requestId === navRequestIdRef.current) {
         setIsLoading(false);
       }
     }
-  }, [fetchHistorical]);
+  }, [abortAllInFlight, fetchHistorical]);
 
   // Wire WebSocket Reconnect Resync Callback (Requirement 12)
   useEffect(() => {
@@ -383,8 +428,11 @@ export function App() {
   // =========================================================================
 
   const handleSelectIndia = useCallback(() => {
-    setSelectedState(null);
-    setSelectedDistrict(null);
+    setNavState({
+      mapLevel: 'india',
+      selectedState: null,
+      selectedDistrict: null,
+    });
     setStateData(null);
     setDistrictData(null);
     setLiveSummary(null);
@@ -397,8 +445,11 @@ export function App() {
       handleSelectIndia();
       return;
     }
-    setSelectedState(stateName);
-    setSelectedDistrict(null);
+    setNavState({
+      mapLevel: 'state',
+      selectedState: stateName,
+      selectedDistrict: null,
+    });
     setDistrictData(null);
     setLiveSummary(null);
     weatherStore.clearScope({ state: stateName, district: null });
@@ -406,36 +457,47 @@ export function App() {
   }, [fetchState, handleSelectIndia, selectedTime]);
 
   const handleSelectDistrict = useCallback((districtName) => {
-    if (!selectedState) return;
-    setSelectedDistrict(districtName);
+    const curState = selectionRef.current.selectedState;
+    if (!curState || !districtName) return;
+    setNavState({
+      mapLevel: 'district',
+      selectedState: curState,
+      selectedDistrict: districtName,
+    });
     setLiveSummary(null);
-    weatherStore.clearScope({ state: selectedState, district: districtName });
-    fetchDistrict(selectedState, districtName, selectedTime);
-  }, [fetchDistrict, selectedState, selectedTime]);
+    weatherStore.clearScope({ state: curState, district: districtName });
+    fetchDistrict(curState, districtName, selectedTime);
+  }, [fetchDistrict, selectedTime]);
 
   const handleBackToState = useCallback(() => {
-    if (!selectedState) return;
-    setSelectedDistrict(null);
+    const curState = selectionRef.current.selectedState;
+    if (!curState) return;
+    setNavState({
+      mapLevel: 'state',
+      selectedState: curState,
+      selectedDistrict: null,
+    });
     setDistrictData(null);
     setLiveSummary(null);
-    weatherStore.clearScope({ state: selectedState, district: null });
-    fetchState(selectedState, selectedTime);
-  }, [fetchState, selectedState, selectedTime]);
+    weatherStore.clearScope({ state: curState, district: null });
+    fetchState(curState, selectedTime);
+  }, [fetchState, selectedTime]);
 
   const handleTimeChange = useCallback((time) => {
     setSelectedTime(time);
     setLiveSummary(null);
-    if (selectedDistrict && selectedState) {
-      weatherStore.clearScope({ state: selectedState, district: selectedDistrict });
-      fetchDistrict(selectedState, selectedDistrict, time);
-    } else if (selectedState) {
-      weatherStore.clearScope({ state: selectedState, district: null });
-      fetchState(selectedState, time);
+    const { mapLevel: curLevel, selectedState: curSt, selectedDistrict: curDt } = selectionRef.current;
+    if (curLevel === 'district' && curDt && curSt) {
+      weatherStore.clearScope({ state: curSt, district: curDt });
+      fetchDistrict(curSt, curDt, time);
+    } else if (curLevel === 'state' && curSt) {
+      weatherStore.clearScope({ state: curSt, district: null });
+      fetchState(curSt, time);
     } else {
       weatherStore.clearScope({ state: null, district: null });
       fetchOverview(time);
     }
-  }, [fetchDistrict, fetchOverview, fetchState, selectedDistrict, selectedState]);
+  }, [fetchDistrict, fetchOverview, fetchState]);
 
   const handleExploreClick = () => {
     const analysisEl = document.getElementById('analysis-section');
@@ -491,6 +553,7 @@ export function App() {
           {/* Map Section with embedded Real TATVA Map & Overview Stats Cards */}
           <ErrorBoundary name="IndiaMapSection" title="Map & Weather Analytics" onReset={() => fetchOverview(selectedTime)}>
             <IndiaMapSection
+              mapLevel={mapLevel}
               metrics={NATIONAL_METRICS}
               selectedState={selectedState}
               selectedDistrict={selectedDistrict}

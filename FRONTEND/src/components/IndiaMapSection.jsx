@@ -18,6 +18,7 @@ import { Breadcrumbs } from './Breadcrumbs';
 import { LoadingOverlay } from './LoadingOverlay';
 
 export function IndiaMapSection({
+  mapLevel = 'india',
   metrics,
   selectedState,
   selectedDistrict,
@@ -215,6 +216,7 @@ export function IndiaMapSection({
 
           {/* Actual Leaflet Weather Map Component */}
           <WeatherMap
+            mapLevel={mapLevel}
             overviewData={overviewData}
             stateData={stateData}
             districtData={districtData}
