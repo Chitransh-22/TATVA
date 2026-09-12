@@ -12,6 +12,7 @@ from app.scheduler.scheduler_service import ingestion_scheduler
 from app.api.ws_manager import weather_ws_manager
 from app.api.weather import router as weather_router
 from app.api.ingestion import router as ingestion_router
+from app.api.mosdac import router as mosdac_router
 
 # Configure logging
 logging.basicConfig(
@@ -78,6 +79,7 @@ app.add_middleware(
 # Include Routers
 app.include_router(weather_router, prefix="/api")
 app.include_router(ingestion_router, prefix="/api")
+app.include_router(mosdac_router, prefix="/api")
 
 
 @app.get("/")

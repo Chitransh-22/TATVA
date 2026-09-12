@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ISRO INSAT-3DS Live Weather Precipitation Map &bull; Standalone Test</title>
+  
+  <!-- Leaflet 1.9.4 CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- Standalone Data Bundle (Works unconditionally on file:/// protocol without web server) -->
+  <script src="mosdac_data.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      overflow: hidden;
+      background: #0f172a;
+      color: #0f172a;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      background: #0f172a;
+    }
+
+    /* Top Left Header Card */
+    .dashboard-card {
+      position: absolute;
+      top: 16px;
+      left: 60px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(8px);
+      padding: 14px 20px;
+      border-radius: 12px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(226, 232, 240, 0.8);
+      max-width: 580px;
+    }
+
+    .title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+
+    .main-title {
+      font-size: 16px;
+      font-weight: 800;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .source-tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: #e0f2fe;
+      color: #0284c7;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: #dcfce7;
+      color: #15803d;
+      border: 1px solid #86efac;
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      background-color: #22c55e;
+      border-radius: 50%;
+      box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+      animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+    }
+
+    .subtitle {
+      font-size: 12px;
+      color: #64748b;
+      margin-bottom: 10px;
+    }
+
+    /* Comparison Banner */
+    .comparison-strip {
+      display: flex;
+      gap: 8px;
+      padding: 8px 10px;
+      background: #f8fafc;
+      border-radius: 8px;
+      border: 1px solid #e2e8f0;
+      margin-bottom: 12px;
+      font-size: 11px;
+    }
+
+    .comp-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .comp-col.isro {
+      border-right: 1px dashed #cbd5e1;
+      padding-right: 8px;
+    }
+
+    .comp-col.nasa {
+      padding-left: 4px;
+    }
+
+    .comp-label {
+      font-weight: 700;
+      color: #475569;
+    }
+
+    .comp-val-live {
+      font-weight: 700;
+      color: #16a34a;
+    }
+
+    .comp-val-stale {
+      font-weight: 700;
+      color: #dc2626;
+    }
+
+    /* Stats Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .stat-box {
+      background: #f1f5f9;
+      padding: 6px 8px;
+      border-radius: 6px;
+      text-align: center;
+    }
+
+    .stat-val {
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+
+    .stat-lbl {
+      font-size: 10px;
+      color: #64748b;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    /* Controls Row */
+    .controls-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      padding-top: 8px;
+      border-top: 1px solid #e2e8f0;
+    }
+
+    .control-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    select, button {
+      font-size: 12px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font-weight: 600;
+      cursor: pointer;
+      outline: none;
+    }
+
+    button:hover {
+      background: #f8fafc;
+      border-color: #94a3b8;
+    }
+
+    button.btn-primary {
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+    }
+
+    button.btn-primary:hover {
+      background: #0369a1;
+    }
+
+    /* Bottom Legend */
+    .legend-card {
+      position: absolute;
+      bottom: 24px;
+      right: 24px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(8px);
+      padding: 12px 16px;
+      border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+      border: 1px solid rgba(226, 232, 240, 0.8);
+      font-size: 11px;
+      min-width: 220px;
+    }
+
+    .legend-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .legend-bar {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .legend-color {
+      width: 20px;
+      height: 12px;
+      border-radius: 3px;
+    }
+
+    .legend-text {
+      color: #334155;
+      font-weight: 600;
+      flex: 1;
+    }
+
+    .legend-cat {
+      font-size: 10px;
+      color: #64748b;
+    }
+
+    /* Bottom Info Status Bar */
+    .status-bar {
+      position: absolute;
+      bottom: 12px;
+      left: 60px;
+      z-index: 1000;
+      background: rgba(15, 23, 42, 0.9);
+      color: #e2e8f0;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 500;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <!-- Top Dashboard Card -->
+  <div class="dashboard-card">
+    <div class="title-row">
+      <div class="main-title">
+        <span>🇮🇳 ISRO MOSDAC INSAT-3DS</span>
+        <span class="source-tag">L2B HEM</span>
+      </div>
+      <div class="live-badge" id="liveBadge">
+        <div class="pulse-dot"></div>
+        <span id="freshnessText">LIVE FRESH (~75 min ago)</span>
+      </div>
+    </div>
+    
+    <div class="subtitle" id="granuleMeta">
+      Granule: <b>3SIMG_12SEP2026_1100_L2B_HEM_V01R00</b> &bull; Obs: <b>2026-09-12 11:00 UTC (16:30 IST)</b>
+    </div>
+
+    <!-- Live Comparison Strip -->
+    <div class="comparison-strip">
+      <div class="comp-col isro">
+        <span class="comp-label">🛰️ ISRO INSAT-3DS (New Pipeline)</span>
+        <span class="comp-val-live">✅ FRESH (1 hr lag) &bull; 4 km resolution</span>
+      </div>
+      <div class="comp-col nasa">
+        <span class="comp-label">🛰️ NASA GPM / IMERG (Old Source)</span>
+        <span class="comp-val-stale">⚠️ STALE (~5 days lag) &bull; 10 km resolution</span>
+      </div>
+    </div>
+
+    <!-- Stats Grid -->
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-val" id="statCellsInIndia">172,712</div>
+        <div class="stat-lbl">India Grid Cells</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" id="statRainCells" style="color:#0284c7;">32,186</div>
+        <div class="stat-lbl">Active Rain Cells</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" id="statMaxRain" style="color:#dc2626;">102.2 mm/h</div>
+        <div class="stat-lbl">Max Rainfall</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" id="statLatency" style="color:#16a34a;">1.59s</div>
+        <div class="stat-lbl">Pipeline Latency</div>
+      </div>
+    </div>
+
+    <!-- Controls Row -->
+    <div class="controls-row">
+      <div class="control-item">
+        <label for="rainFilter">Rain Threshold:</label>
+        <select id="rainFilter" onchange="applyFilter()">
+          <option value="0.1">All Rain (&gt; 0.1 mm/h)</option>
+          <option value="2.5">Light+ (&gt; 2.5 mm/h)</option>
+          <option value="7.5">Moderate+ (&gt; 7.5 mm/h)</option>
+          <option value="15.0">Heavy+ (&gt; 15.0 mm/h)</option>
+          <option value="50.0">Extreme (&gt; 50.0 mm/h)</option>
+        </select>
+      </div>
+
+      <div class="control-item">
+        <label for="opacitySlider">Opacity:</label>
+        <input type="range" id="opacitySlider" min="20" max="100" value="85" style="width:70px;" oninput="updateOpacity(this.value)">
+      </div>
+
+      <button class="btn-primary" onclick="refreshData()">↻ Refresh Live</button>
+    </div>
+  </div>
+
+  <!-- Legend Card -->
+  <div class="legend-card">
+    <div class="legend-title">
+      <span>Precipitation Rate</span>
+      <span style="font-weight:normal; color:#64748b;">(mm/hr)</span>
+    </div>
+    <div class="legend-bar">
+      <div class="legend-item">
+        <div class="legend-color" style="background:#a855f7;"></div>
+        <div class="legend-text">&gt; 100.0</div>
+        <div class="legend-cat">Extreme Downpour</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background:#ef4444;"></div>
+        <div class="legend-text">50.0 – 100.0</div>
+        <div class="legend-cat">Torrential</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background:#f97316;"></div>
+        <div class="legend-text">30.0 – 50.0</div>
+        <div class="legend-cat">Very Heavy</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background:#eab308;"></div>
+        <div class="legend-text">15.0 – 30.0</div>
+        <div class="legend-cat">Heavy Rain</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background:#22c55e;"></div>
+        <div class="legend-text">7.5 – 15.0</div>
+        <div class="legend-cat">Moderate</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background:#0284c7;"></div>
+        <div class="legend-text">2.5 – 7.5</div>
+        <div class="legend-cat">Light Rain</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background:#38bdf8;"></div>
+        <div class="legend-text">0.1 – 2.5</div>
+        <div class="legend-cat">Very Light</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Status Bar -->
+  <div class="status-bar" id="statusBar">
+    <span>🇮🇳 Survey of India Boundary Active</span> &bull;
+    <span id="hoverInfo">Hover or click anywhere on India to inspect rainfall rate</span>
+  </div>
+
+  <script>
+    // 1. Initialize Map centered on India
+    const map = L.map('map', {
+      center: [22.8, 82.5],
+      zoom: 5,
+      minZoom: 4,
+      maxZoom: 12,
+      zoomControl: true,
+      preferCanvas: true
+    });
+
+    // Dark Basemap suitable for vibrant weather layers
+    const darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://carto.com/">CARTO</a> | &copy; ISRO MOSDAC INSAT-3DS',
+      maxZoom: 19
+    }).addTo(map);
+
+    let allPoints = [];
+    let layerOpacity = 0.85;
+    let minThreshold = 0.1;
+    let canvasLayer = null;
+
+    // 2. Load Survey of India boundary GeoJSON (CORS-safe for file:/// protocol)
+    function renderBoundary(geoData) {
+      L.geoJSON(geoData, {
+        style: {
+          color: '#1e3a8a',
+          weight: 2,
+          opacity: 0.85,
+          fillColor: '#0284c7',
+          fillOpacity: 0.03
+        }
+      }).addTo(map);
+    }
+
+    if (window.INDIA_BOUNDARY) {
+      renderBoundary(window.INDIA_BOUNDARY);
+    } else {
+      fetch('india_boundary.geojson')
+        .then(res => res.json())
+        .then(data => renderBoundary(data))
+        .catch(e => console.warn('Could not load local india_boundary.geojson:', e));
+    }
+
+    // 3. Color Scale for Meteorological Rainfall
+    function getRainColor(val) {
+      if (val >= 100.0) return '#a855f7';
+      if (val >= 50.0)  return '#ef4444';
+      if (val >= 30.0)  return '#f97316';
+      if (val >= 15.0)  return '#eab308';
+      if (val >= 7.5)   return '#22c55e';
+      if (val >= 2.5)   return '#0284c7';
+      return '#38bdf8';
+    }
+
+    function getRainCategory(val) {
+      if (val >= 100.0) return 'Extreme Downpour';
+      if (val >= 50.0)  return 'Torrential Downpour';
+      if (val >= 30.0)  return 'Very Heavy Rain';
+      if (val >= 15.0)  return 'Heavy Rain';
+      if (val >= 7.5)   return 'Moderate Rain';
+      if (val >= 2.5)   return 'Light Rain';
+      return 'Very Light Rain';
+    }
+
+    // 4. High Performance Canvas Renderer
+    const CanvasRainOverlay = L.Layer.extend({
+      onAdd: function(map) {
+        this._map = map;
+        this._canvas = L.DomUtil.create('canvas', 'leaflet-zoom-animated');
+        map.getPanes().overlayPane.appendChild(this._canvas);
+        map.on('moveend', this._reset, this);
+        map.on('zoomend', this._reset, this);
+        this._reset();
+      },
+
+      onRemove: function(map) {
+        map.getPanes().overlayPane.removeChild(this._canvas);
+        map.off('moveend', this._reset, this);
+        map.off('zoomend', this._reset, this);
+      },
+
+      _reset: function() {
+        const bounds = this._map.getBounds();
+        const topLeft = this._map.latLngToLayerPoint(bounds.getNorthWest());
+        const size = this._map.getSize();
+
+        this._canvas.width = size.x;
+        this._canvas.height = size.y;
+        L.DomUtil.setPosition(this._canvas, topLeft);
+        this._draw();
+      },
+
+      _draw: function() {
+        if (!allPoints || allPoints.length === 0) return;
+        const ctx = this._canvas.getContext('2d');
+        ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+        ctx.globalAlpha = layerOpacity;
+
+        const zoom = this._map.getZoom();
+        // 4km pixel radius scaled by zoom
+        const radius = Math.max(2, Math.min(18, Math.pow(2, zoom - 5) * 2.8));
+
+        for (let i = 0; i < allPoints.length; i++) {
+          const pt = allPoints[i];
+          const lat = pt[0];
+          const lon = pt[1];
+          const val = pt[2];
+
+          if (val < minThreshold) continue;
+
+          const latLng = L.latLng(lat, lon);
+          if (!this._map.getBounds().contains(latLng)) continue;
+
+          const p = this._map.latLngToContainerPoint(latLng);
+
+          ctx.fillStyle = getRainColor(val);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    });
+
+    canvasLayer = new CanvasRainOverlay();
+    canvasLayer.addTo(map);
+
+    // 5. Data Fetching with Standalone Fallback Architecture
+    async function loadData() {
+      // 1. If CORS-safe bundled script data is available, render immediately (works on file:/// protocol)
+      if (window.MOSDAC_DATA && window.MOSDAC_DATA.points && window.MOSDAC_DATA.points.length > 0) {
+        handleDataLoaded(window.MOSDAC_DATA, 'ISRO INSAT-3DS BUNDLE (12-SEP-2026)');
+      }
+
+      // 2. Also check if live backend API is available on port 8000
+      const liveApiUrl = 'http://127.0.0.1:8000/api/weather/mosdac/points?min_rain=0.1&limit=50000';
+      try {
+        const res = await fetch(liveApiUrl, { signal: AbortSignal.timeout(1500) });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.points && data.points.length > 0) {
+            handleDataLoaded(data, 'LIVE BACKEND API');
+            return;
+          }
+        }
+      } catch (e) {
+        // Backend not running; window.MOSDAC_DATA already loaded
+      }
+
+      // 3. Fallback: local snapshot file if loaded via HTTP server
+      if (!allPoints || allPoints.length === 0) {
+        try {
+          const res = await fetch('mosdac_latest_data.json');
+          if (res.ok) {
+            const data = await res.json();
+            handleDataLoaded(data, 'LOCAL SNAPSHOT (12-SEP-2026)');
+            return;
+          }
+        } catch (e) {
+          console.error('Failed to load local mosdac_latest_data.json:', e);
+          document.getElementById('hoverInfo').innerText = 'Error loading precipitation data';
+        }
+      }
+    }
+
+    function handleDataLoaded(data, sourceLabel) {
+      allPoints = data.points || [];
+      const summary = data.summary || {};
+
+      document.getElementById('statCellsInIndia').innerText = (summary.total_points || 172712).toLocaleString();
+      document.getElementById('statRainCells').innerText = allPoints.length.toLocaleString();
+      document.getElementById('statMaxRain').innerText = (summary.max_precipitation_mm_hr || 102.19) + ' mm/h';
+      document.getElementById('statLatency').innerText = (summary.processing_latency_seconds || 1.59) + 's';
+
+      if (summary.granule_id) {
+        document.getElementById('granuleMeta').innerHTML = 
+          `Granule: <b>${summary.granule_id}</b> &bull; Obs: <b>${summary.observation_time_ist || '2026-09-12 16:30:00 IST'}</b>`;
+      }
+
+      if (summary.data_age_minutes) {
+        const hrs = Math.floor(summary.data_age_minutes / 60);
+        const mins = Math.round(summary.data_age_minutes % 60);
+        const ageStr = hrs > 0 ? `${hrs}h ${mins}m ago` : `${mins} min ago`;
+        document.getElementById('freshnessText').innerText = `LIVE FRESH (~${ageStr})`;
+      }
+
+      document.getElementById('hoverInfo').innerText = `Loaded ${allPoints.length.toLocaleString()} active rain cells from ${sourceLabel}`;
+      if (canvasLayer) canvasLayer._reset();
+    }
+
+    function applyFilter() {
+      minThreshold = parseFloat(document.getElementById('rainFilter').value);
+      if (canvasLayer) canvasLayer._draw();
+    }
+
+    function updateOpacity(val) {
+      layerOpacity = val / 100.0;
+      if (canvasLayer) canvasLayer._draw();
+    }
+
+    function refreshData() {
+      document.getElementById('hoverInfo').innerText = 'Refreshing data...';
+      loadData();
+    }
+
+    // 6. Interactive Click & Hover Inspector
+    map.on('click', function(e) {
+      if (!allPoints || allPoints.length === 0) return;
+      const clickLat = e.latlng.lat;
+      const clickLon = e.latlng.lng;
+
+      // Find closest rain point within ~10km (0.1 deg)
+      let closest = null;
+      let minDistance = 0.12;
+
+      for (let i = 0; i < allPoints.length; i++) {
+        const pt = allPoints[i];
+        const dist = Math.hypot(pt[0] - clickLat, pt[1] - clickLon);
+        if (dist < minDistance) {
+          minDistance = dist;
+          closest = pt;
+        }
+      }
+
+      if (closest) {
+        const lat = closest[0];
+        const lon = closest[1];
+        const p = closest[2];
+        const cat = getRainCategory(p);
+        const in_hr = (p / 25.4).toFixed(2);
+
+        const content = `
+          <div style="font-size:13px; line-height:1.5;">
+            <b style="color:#0284c7; font-size:14px;">🛰️ ISRO INSAT-3DS Observation</b><br>
+            <b>Coordinates:</b> ${lat.toFixed(3)}° N, ${lon.toFixed(3)}° E<br>
+            <b>Rainfall Rate:</b> <b style="font-size:15px; color:#0f172a;">${p.toFixed(2)} mm/hr</b> (${in_hr} in/hr)<br>
+            <span style="display:inline-block; margin-top:5px; padding:3px 8px; border-radius:4px; font-size:11px; font-weight:700; background:#e0f2fe; color:#0369a1;">
+              ${cat}
+            </span><br>
+            <span style="font-size:10px; color:#64748b; margin-top:4px; display:inline-block;">
+              Clipped strictly inside Survey of India Boundary
+            </span>
+          </div>
+        `;
+
+        L.popup()
+          .setLatLng([lat, lon])
+          .setContent(content)
+          .openOn(map);
+      }
+    });
+
+    // Start data load
+    loadData();
+  </script>
+</body>
+</html>

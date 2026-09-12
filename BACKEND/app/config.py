@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     NASA_SSL_CA_BUNDLE: Optional[str] = None
     EXPLABS_API_KEY: str = ""
 
+    # ISRO MOSDAC Configuration (INSAT-3DS)
+    MOSDAC_USERNAME: str = "techy.tron321@gmail.com"
+    MOSDAC_PASSWORD: str = "@Aizen-Zoro-11"
+    MOSDAC_TOKEN_URL: str = "https://mosdac.gov.in/download_api/gettoken"
+    MOSDAC_SEARCH_URL: str = "https://mosdac.gov.in/apios/datasets.json"
+    MOSDAC_DOWNLOAD_URL: str = "https://mosdac.gov.in/download_api/download"
+    MOSDAC_DEFAULT_DATASET: str = "3SIMG_L2B_HEM"
+
     # Kafka Configuration
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
     KAFKA_ENABLED: bool = True
@@ -68,6 +76,8 @@ class Settings(BaseSettings):
     DATA_EXTRACTED_DIR: Path = BACKEND_DIR / "data" / "extracted"
     DATA_TRANSFORMED_DIR: Path = BACKEND_DIR / "data" / "transformed"
     DATA_DLQ_DIR: Path = BACKEND_DIR / "data" / "dlq"
+    DATA_MOSDAC_RAW_DIR: Path = BACKEND_DIR / "data" / "mosdac" / "raw"
+    DATA_MOSDAC_TRANSFORMED_DIR: Path = BACKEND_DIR / "data" / "mosdac" / "transformed"
 
     # Scheduler Settings
     SCHEDULER_INTERVAL_MINUTES: int = 30
@@ -98,6 +108,8 @@ class Settings(BaseSettings):
         self.DATA_EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
         self.DATA_TRANSFORMED_DIR.mkdir(parents=True, exist_ok=True)
         self.DATA_DLQ_DIR.mkdir(parents=True, exist_ok=True)
+        self.DATA_MOSDAC_RAW_DIR.mkdir(parents=True, exist_ok=True)
+        self.DATA_MOSDAC_TRANSFORMED_DIR.mkdir(parents=True, exist_ok=True)
 
     def resolve_raw_path(self, raw_path: Optional[Any] = None, file_name: Optional[str] = None) -> Path:
         """Dynamically resolve raw ZIP archive path to current DATA_RAW_DIR.
