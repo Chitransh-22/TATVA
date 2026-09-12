@@ -42,8 +42,18 @@ export function App() {
     }
   }, []);
 
+  // Active Weather Data Source (Default: MOSDAC, synchronized from metadata)
+  const [activeSource, setActiveSource] = useState('MOSDAC');
+
   // Single Persistent WebSocket Hook (Incremental updates, auto-reconnect, heartbeat)
   const reconnectHandlerRef = useRef(null);
+  const liveUpdateHandlerRef = useRef(null);
+  const handleLiveWeatherUpdate = useCallback((batch) => {
+    if (liveUpdateHandlerRef.current) {
+      liveUpdateHandlerRef.current(batch);
+    }
+  }, []);
+
   const { status: wsStatus, telemetry: wsTelemetry } = useWeatherWebSocket(
     selectedState,
     selectedDistrict,
@@ -51,7 +61,9 @@ export function App() {
       if (reconnectHandlerRef.current) {
         reconnectHandlerRef.current();
       }
-    }, [])
+    }, []),
+    activeSource,
+    handleLiveWeatherUpdate
   );
 
   // Live Summary from WebSocket for Metric Tiles
@@ -109,6 +121,9 @@ export function App() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setMetadata(data);
+      if (data?.source) {
+        setActiveSource(data.source);
+      }
       return data;
     } catch (err) {
       console.warn('Metadata fetch warning:', err.message);
@@ -373,6 +388,29 @@ export function App() {
     };
   }, [fetchDistrict, fetchOverview, fetchState]);
 
+  // Wire Live WebSocket Update Handler (Step 7 & 8)
+  useEffect(() => {
+    liveUpdateHandlerRef.current = (batch) => {
+      const timestamp = batch.timestamp || batch.observation_time;
+      console.log(`[WEATHER]\nApplying update:\n${timestamp}`);
+
+      // Invalidate client-side caches so the new observation is queried fresh from PostgreSQL
+      overviewCacheRef.current.clear();
+      stateCacheRef.current.clear();
+      districtCacheRef.current.clear();
+
+      const cur = selectionRef.current;
+      if (cur.selectedDistrict && cur.selectedState) {
+        fetchDistrict(cur.selectedState, cur.selectedDistrict, timestamp);
+      } else if (cur.selectedState) {
+        fetchState(cur.selectedState, timestamp);
+      } else {
+        fetchOverview(timestamp);
+      }
+      fetchMetadata();
+    };
+  }, [fetchDistrict, fetchMetadata, fetchOverview, fetchState]);
+
   // =========================================================================
   // Initial Load (Parallel non-blocking fetch)
   // =========================================================================
@@ -574,6 +612,7 @@ export function App() {
               wsStatus={wsStatus}
               wsTelemetry={wsTelemetry}
               liveSummary={liveSummary}
+              activeSource={activeSource}
             />
           </ErrorBoundary>
 

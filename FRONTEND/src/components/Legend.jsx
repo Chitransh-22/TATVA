@@ -1,10 +1,11 @@
 import {
   getRainfallColor,
   getCategoryBadgeStyle,
+  getPrecipitationRgb,
   CANONICAL_RAIN_RATE_UNIT,
 } from '../utils/rainfallMetrics';
 
-export { getRainfallColor, getCategoryBadgeStyle };
+export { getRainfallColor, getCategoryBadgeStyle, getPrecipitationRgb };
 export const getPrecipitationColor = getRainfallColor;
 
 

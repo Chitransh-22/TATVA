@@ -314,3 +314,12 @@ async def trigger_mosdac_ingestion(
             "message": "MOSDAC ingestion job launched in background.",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+
+@router.post("/test-broadcast")
+async def trigger_mosdac_test_broadcast(
+    granule_id: Optional[str] = Query(None, description="Optional specific granule ID to broadcast"),
+) -> Dict[str, Any]:
+    """[DEV/TEST ONLY - Step 12] Publishes a REAL existing MOSDAC observation as a test WebSocket event."""
+    result = await mosdac_pipeline.broadcast_real_observation(granule_id=granule_id, is_test_event=True)
+    return result

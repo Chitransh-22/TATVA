@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     MOSDAC_DOWNLOAD_URL: str = "https://mosdac.gov.in/download_api/download"
     MOSDAC_DEFAULT_DATASET: str = "3SIMG_L2B_HEM"
 
+    # Active Weather Data Source (MOSDAC | NASA)
+    WEATHER_DATA_SOURCE: str = "MOSDAC"
+
+    # Pipeline Feature Toggles (Zero code deletion, environment-controlled NASA ingestion)
+    NASA_INGESTION_ENABLED: bool = False
+    MOSDAC_INGESTION_ENABLED: bool = True
+
     # Kafka Configuration
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
     KAFKA_ENABLED: bool = True

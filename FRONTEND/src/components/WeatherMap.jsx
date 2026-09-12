@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import L from 'leaflet';
-import { getPrecipitationColor, Legend } from './Legend';
+import { getPrecipitationColor, getPrecipitationRgb, Legend } from './Legend';
 import { isValidRainfall } from '../utils/rainfallMetrics';
 import { weatherStore } from '../data/weatherStore';
 
@@ -105,6 +105,7 @@ export function WeatherMap({
   onSelectDistrict,
   onFitIndia,
   opacity,
+  activeSource = 'MOSDAC',
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -147,6 +148,7 @@ export function WeatherMap({
     selectedState,
     selectedDistrict,
     opacity,
+    activeSource,
   });
   renderDataRef.current = {
     mapLevel,
@@ -156,6 +158,7 @@ export function WeatherMap({
     selectedState,
     selectedDistrict,
     opacity,
+    activeSource,
   };
 
   // Helper to update inspector DOM directly (0ms, 0 React renders)
@@ -173,9 +176,15 @@ export function WeatherMap({
 
   const resetInspector = useCallback(() => {
     if (!inspectorRef.current) return;
+    const isNasa = (renderDataRef.current?.overviewData?.source === 'NASA') ||
+                   (renderDataRef.current?.stateData?.source === 'NASA') ||
+                   (renderDataRef.current?.activeSource === 'NASA');
+    const sourceLabel = isNasa
+      ? '🇮🇳 NASA IMERG 0.1° GPM Real-Time Precipitation'
+      : '🇮🇳 ISRO MOSDAC INSAT-3DS Real-Time Precipitation';
     inspectorRef.current.innerHTML = `
       <div class="inspector-content">
-        <span class="inspector-location">🇮🇳 NASA IMERG 0.1° GPM Real-Time Precipitation</span>
+        <span class="inspector-location">${sourceLabel}</span>
         <span class="inspector-hint">&bull; Hover regions to inspect metrics</span>
       </div>
     `;
@@ -286,6 +295,9 @@ export function WeatherMap({
       onRemove: function (leafletMap) {
         if (this._canvas && this._canvas.parentNode) {
           this._canvas.parentNode.removeChild(this._canvas);
+        }
+        if (this._offscreenCanvas) {
+          this._offscreenCanvas = null;
         }
         leafletMap.off('moveend zoomend resize viewreset', this._draw, this);
       },
@@ -424,7 +436,7 @@ export function WeatherMap({
         }
 
         // -------------------------------------------------------------
-        // RENDER WEATHER PRECIPITATION CELLS (Viewport Culled)
+        // RENDER FLUID / CONTINUOUS PRECIPITATION FIELD
         // -------------------------------------------------------------
         const mapBounds = this._map.getBounds();
         const south = mapBounds.getSouth();
@@ -432,12 +444,16 @@ export function WeatherMap({
         const west = mapBounds.getWest();
         const east = mapBounds.getEast();
 
-        let renderedCount = 0;
-        let validCoordCount = 0;
-        let validRainCount = 0;
-        let minRain = Infinity;
-        let maxRain = -Infinity;
+        // Calculate screen scale: distance between grid points in CSS pixels
+        const pRef0 = this._map.latLngToContainerPoint([20.0, 80.0]);
+        const pRef1 = this._map.latLngToContainerPoint([20.0 + step, 80.0]);
+        const stepScreenPx = Math.max(Math.abs(pRef1.y - pRef0.y), 4);
 
+        // Kernel radius for smooth blending between adjacent cells
+        const kernelRadius = Math.max(stepScreenPx * 1.35, 10);
+
+        // Collect and filter valid rain points within viewport margin
+        const activeRainPoints = [];
         for (let i = 0; i < points.length; i++) {
           const pt = points[i];
           const lat = pt.latitude !== undefined ? pt.latitude : pt[0];
@@ -445,29 +461,71 @@ export function WeatherMap({
           const p = pt.precipitation !== undefined ? pt.precipitation : pt[2];
 
           if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) continue;
-          validCoordCount++;
-
           if (!isValidRainfall(p) || p < 0.1) continue;
-          validRainCount++;
-          if (p < minRain) minRain = p;
-          if (p > maxRain) maxRain = p;
 
-          // Viewport culling to visible area + margin
-          if (lat < south - step || lat > north + step || lon < west - step || lon > east + step) {
+          // Viewport culling with generous margin for kernel overlap
+          if (lat < south - step * 2 || lat > north + step * 2 || lon < west - step * 2 || lon > east + step * 2) {
             continue;
           }
 
-          const nw = this._map.latLngToContainerPoint([lat + step / 2, lon - step / 2]);
-          const se = this._map.latLngToContainerPoint([lat - step / 2, lon + step / 2]);
-          const x = Math.min(nw.x, se.x);
-          const y = Math.min(nw.y, se.y);
-          const w = Math.max(Math.ceil(Math.abs(se.x - nw.x)), 2);
-          const h = Math.max(Math.ceil(Math.abs(se.y - nw.y)), 2);
-
-          ctx.fillStyle = getPrecipitationColor(p);
-          ctx.fillRect(Math.floor(x), Math.floor(y), w, h);
-          renderedCount++;
+          const screenPt = this._map.latLngToContainerPoint([lat, lon]);
+          activeRainPoints.push({
+            x: screenPt.x,
+            y: screenPt.y,
+            p,
+          });
         }
+
+        if (activeRainPoints.length > 0) {
+          // Sort points by intensity ascending so heavy rain cores sit cleanly on top of light rain halos
+          activeRainPoints.sort((a, b) => a.p - b.p);
+
+          // Prepare reusable offscreen canvas for rendering the smooth field
+          if (!this._offscreenCanvas) {
+            this._offscreenCanvas = document.createElement('canvas');
+          }
+          const offscreen = this._offscreenCanvas;
+          offscreen.width = Math.round(size.x * dpr);
+          offscreen.height = Math.round(size.y * dpr);
+          const offCtx = offscreen.getContext('2d');
+          offCtx.clearRect(0, 0, offscreen.width, offscreen.height);
+          offCtx.save();
+          offCtx.scale(dpr, dpr);
+
+          // Draw overlapping soft radial kernels
+          for (let i = 0; i < activeRainPoints.length; i++) {
+            const { x, y, p } = activeRainPoints[i];
+            const rgb = getPrecipitationRgb(p);
+            if (!rgb) continue;
+            const [r, g, b] = rgb;
+
+            const grad = offCtx.createRadialGradient(x, y, 0, x, y, kernelRadius);
+            grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.95)`);
+            grad.addColorStop(0.35, `rgba(${r}, ${g}, ${b}, 0.85)`);
+            grad.addColorStop(0.70, `rgba(${r}, ${g}, ${b}, 0.45)`);
+            grad.addColorStop(1.0, `rgba(${r}, ${g}, ${b}, 0)`);
+
+            offCtx.fillStyle = grad;
+            offCtx.beginPath();
+            offCtx.arc(x, y, kernelRadius, 0, Math.PI * 2);
+            offCtx.fill();
+          }
+          offCtx.restore();
+
+          // Transfer from offscreen canvas to main canvas with fluid Gaussian blur
+          // Strictly clipped to the vector boundary by ctx.clip('evenodd')
+          const blurPx = Math.max(Math.round(stepScreenPx * 0.4), 4);
+          if ('filter' in ctx) {
+            ctx.filter = `blur(${blurPx}px)`;
+          }
+          ctx.drawImage(offscreen, 0, 0, size.x, size.y);
+          if ('filter' in ctx) {
+            ctx.filter = 'none';
+          }
+        }
+
+        const activeObsTime = curOverview?.observation_time || curStateData?.observation_time || curDistData?.observation_time || 'latest';
+        console.log(`[MAP]\nUpdated:\n${activeObsTime}`);
 
         ctx.restore();
       },
@@ -599,9 +657,26 @@ export function WeatherMap({
 
           const getCellRain = (latlng) => {
             const { overviewData: ov } = renderDataRef.current;
+            const step = ov?.grid_step || 0.5;
+            const storeMap = weatherStore.getRecordsMap();
+            if (storeMap && storeMap.size > 0) {
+              let nearestP = null;
+              let minDist = step * 0.75;
+              for (const pt of storeMap.values()) {
+                const dLat = Math.abs(pt.latitude - latlng.lat);
+                const dLon = Math.abs(pt.longitude - latlng.lng);
+                if (dLat <= minDist && dLon <= minDist) {
+                  const dist = Math.hypot(dLat, dLon);
+                  if (dist < minDist) {
+                    minDist = dist;
+                    nearestP = pt.precipitation;
+                  }
+                }
+              }
+              if (nearestP !== null && isValidRainfall(nearestP)) return nearestP;
+            }
             const grid = ov?.grid_points;
             if (grid?.length) {
-              const step = ov?.grid_step || 0.5;
               const cell = grid.find(
                 ([cLat, cLon]) => Math.abs(cLat - latlng.lat) <= step / 2 && Math.abs(cLon - latlng.lng) <= step / 2
               );
@@ -1102,7 +1177,11 @@ export function WeatherMap({
       {/* Bottom Status / Cursor Inspector Pill (Direct DOM updated) */}
       <div ref={inspectorRef} className="map-inspector-pill">
         <div className="inspector-content">
-          <span className="inspector-location">🇮🇳 NASA IMERG 0.1° GPM Real-Time Precipitation</span>
+          <span className="inspector-location">
+            {overviewData?.source === 'NASA' || activeSource === 'NASA'
+              ? '🇮🇳 NASA IMERG 0.1° GPM Real-Time Precipitation'
+              : '🇮🇳 ISRO MOSDAC INSAT-3DS Real-Time Precipitation'}
+          </span>
           <span className="inspector-hint">&bull; Hover regions to inspect metrics</span>
         </div>
       </div>

@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Set, List, Any
 from fastapi import WebSocket, WebSocketDisconnect
+from app.config import settings
 
 logger = logging.getLogger("ritu.ws")
 
@@ -25,6 +26,7 @@ class ClientSubscription:
     def __init__(self, client_id: str, websocket: WebSocket):
         self.client_id: str = client_id
         self.websocket: WebSocket = websocket
+        self.source: str = getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")
         self.state: Optional[str] = None
         self.district: Optional[str] = None
         self.parameter: str = "precipitation"
@@ -35,8 +37,18 @@ class ClientSubscription:
         self.message_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         self._sender_task: Optional[asyncio.Task] = None
 
-    def matches(self, target_state: Optional[str], target_district: Optional[str]) -> bool:
+    def matches(
+        self,
+        target_state: Optional[str],
+        target_district: Optional[str],
+        target_source: Optional[str] = None,
+    ) -> bool:
         """Determine if an incremental update is relevant to this subscriber."""
+        # Source filtering: If client is subscribed to MOSDAC, ignore NASA events (and vice versa)
+        if target_source and self.source:
+            if target_source.strip().upper() != self.source.strip().upper():
+                return False
+
         # 1. District level subscriber: only wants updates for this district
         if self.district:
             if target_district:
@@ -143,6 +155,7 @@ class WeatherWebSocketManager:
         client_id: str,
         state: Optional[str] = None,
         district: Optional[str] = None,
+        source: Optional[str] = None,
         parameter: str = "precipitation",
         bounds: Optional[Dict[str, float]] = None,
         zoom: Optional[int] = None,
@@ -155,17 +168,20 @@ class WeatherWebSocketManager:
 
             sub.state = state.strip() if state else None
             sub.district = district.strip() if district else None
+            if source:
+                sub.source = source.strip().upper()
             sub.parameter = parameter
             sub.bounds = bounds
             sub.zoom = zoom
             sub.last_timestamp = datetime.now(timezone.utc)
 
-        logger.info(f"Client {client_id} subscription updated: state={sub.state}, district={sub.district}")
+        logger.info(f"Client {client_id} subscription updated: source={sub.source}, state={sub.state}, district={sub.district}")
 
         # Send subscription confirmation
         ack_msg = {
             "type": "subscribed",
             "subscription": {
+                "source": sub.source,
                 "state": sub.state,
                 "district": sub.district,
                 "parameter": sub.parameter,
@@ -210,6 +226,11 @@ class WeatherWebSocketManager:
         target_district: Optional[str] = None,
         timestamp: Optional[datetime] = None,
         granule_id: Optional[str] = None,
+        source: Optional[str] = None,
+        product: Optional[str] = None,
+        point_count: Optional[int] = None,
+        active_rain_count: Optional[int] = None,
+        max_rainfall: Optional[float] = None,
     ):
         """Broadcast a batch of incremental weather updates strictly to matching subscribers."""
         if not self._clients or not updates:
@@ -218,17 +239,29 @@ class WeatherWebSocketManager:
         ts = timestamp or datetime.now(timezone.utc)
         self._version_counter += 1
         self.last_broadcast_time = ts
-        self.last_broadcast_granule = granule_id or "REALTIME-IMERG"
+        self.last_broadcast_granule = granule_id or "REALTIME-WEATHER"
         self.last_broadcast_updates_count = len(updates)
         self.total_broadcasts += 1
 
+        active_source = (source or getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")).upper()
+        prod = product or ("3SIMG_L2B_HEM" if active_source == "MOSDAC" else "IMERG")
+        p_count = point_count if point_count is not None else (summary.get("total_points", len(updates)) if summary else len(updates))
+        active_count = active_rain_count if active_rain_count is not None else (summary.get("active_rain_points", len(updates)) if summary else len(updates))
+        max_r = max_rainfall if max_rainfall is not None else (summary.get("max_precipitation", 0.0) if summary else 0.0)
+
         payload = {
-            "type": "weather_batch",
+            "type": "weather_update",
             "action": "upsert",
+            "source": active_source,
+            "product": prod,
             "version": self._version_counter,
+            "granule_id": granule_id or f"REALTIME-{active_source}",
+            "observation_time": ts.isoformat(),
             "timestamp": ts.isoformat(),
             "timestamp_ist": _to_ist_str(ts),
-            "granule_id": granule_id or "REALTIME-IMERG",
+            "point_count": p_count,
+            "active_rain_count": active_count,
+            "max_rainfall": max_r,
             "state": target_state,
             "district": target_district,
             "updates_count": len(updates),
@@ -243,7 +276,7 @@ class WeatherWebSocketManager:
         async with self._lock:
             targets = [
                 sub for sub in self._clients.values()
-                if sub.matches(target_state, target_district)
+                if sub.matches(target_state, target_district, active_source)
             ]
 
         for sub in targets:
@@ -258,16 +291,20 @@ class WeatherWebSocketManager:
         target_state: Optional[str] = None,
         target_district: Optional[str] = None,
         timestamp: Optional[datetime] = None,
+        source: Optional[str] = None,
     ):
         """Broadcast explicit expiration / deletion of obsolete weather observation points."""
         if not self._clients or not ids:
             return
 
         ts = timestamp or datetime.now(timezone.utc)
+        active_source = (source or getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")).upper()
         payload = json.dumps({
             "type": "weather_remove",
             "action": "remove",
+            "source": active_source,
             "timestamp": ts.isoformat(),
+            "timestamp_ist": _to_ist_str(ts),
             "ids": ids,
             "state": target_state,
             "district": target_district,
@@ -276,7 +313,7 @@ class WeatherWebSocketManager:
         async with self._lock:
             targets = [
                 sub for sub in self._clients.values()
-                if sub.matches(target_state, target_district)
+                if sub.matches(target_state, target_district, active_source)
             ]
 
         for sub in targets:
@@ -294,6 +331,7 @@ class WeatherWebSocketManager:
         target_state: Optional[str] = None,
         target_district: Optional[str] = None,
         timestamp: Optional[datetime] = None,
+        source: Optional[str] = None,
     ):
         """Broadcast a single incremental weather event."""
         if not self._clients:
@@ -306,11 +344,15 @@ class WeatherWebSocketManager:
         self.last_broadcast_updates_count = 1
         self.total_broadcasts += 1
 
+        active_source = (source or (data.get("source") if data else None) or getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")).upper()
         payload = {
             "type": event_type,
             "action": action,
+            "source": active_source,
             "version": self._version_counter,
             "id": point_id or (data.get("id") if data else None),
+            "granule_id": data.get("granule_id") if data else None,
+            "observation_time": ts.isoformat(),
             "timestamp": ts.isoformat(),
             "timestamp_ist": _to_ist_str(ts),
             "state": target_state,
@@ -322,7 +364,7 @@ class WeatherWebSocketManager:
         async with self._lock:
             targets = [
                 sub for sub in self._clients.values()
-                if sub.matches(target_state, target_district)
+                if sub.matches(target_state, target_district, active_source)
             ]
 
         for sub in targets:

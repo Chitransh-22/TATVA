@@ -50,6 +50,10 @@ class IngestionScheduler:
 
     async def run_now(self, limit: int = 50) -> int:
         """Trigger an immediate discovery cycle and auto-ingest latest 30min granules."""
+        if not getattr(settings, "NASA_INGESTION_ENABLED", True):
+            logger.info("[NASA] Ingestion disabled by configuration (NASA_INGESTION_ENABLED=false). Preserving existing data and code.")
+            return 0
+
         if self._lock.locked():
             logger.info("Discovery run already in progress. Skipping concurrent trigger.")
             return self.last_run_count
@@ -157,14 +161,36 @@ class IngestionScheduler:
             "broadcasted_removals_count": len(removed_ids),
         }
 
+    async def run_mosdac_now(self) -> Dict[str, Any]:
+        """Trigger an immediate ISRO MOSDAC check and ingestion cycle."""
+        if not getattr(settings, "MOSDAC_INGESTION_ENABLED", False):
+            logger.info("[MOSDAC] Ingestion disabled by configuration (MOSDAC_INGESTION_ENABLED=false).")
+            return {"status": "DISABLED"}
+        try:
+            from app.ingestion.mosdac.pipeline import mosdac_pipeline
+            logger.info("[Scheduler] Checking for latest MOSDAC INSAT-3DS granule...")
+            return await mosdac_pipeline.ingest_latest()
+        except Exception as me:
+            logger.error(f"[Scheduler] Error in MOSDAC ingestion: {me}")
+            return {"status": "ERROR", "error": str(me)}
+
     async def _loop(self) -> None:
-        """Periodic loop running discovery and rolling 7-day cleanup."""
+        """Periodic loop running discovery, MOSDAC check, and rolling 7-day cleanup."""
         await asyncio.sleep(3)
         await self.cleanup_expired_observations(days=7)
-        try:
-            await self.run_now()
-        except Exception as init_err:
-            logger.error(f"Error in initial startup discovery/ingestion: {init_err}")
+
+        # Initial check on startup
+        if getattr(settings, "NASA_INGESTION_ENABLED", False):
+            try:
+                await self.run_now()
+            except Exception as init_err:
+                logger.error(f"Error in initial startup NASA discovery/ingestion: {init_err}")
+
+        if getattr(settings, "MOSDAC_INGESTION_ENABLED", False):
+            try:
+                await self.run_mosdac_now()
+            except Exception as mos_err:
+                logger.error(f"Error in initial startup MOSDAC ingestion: {mos_err}")
 
         last_discovery = asyncio.get_event_loop().time()
         last_cleanup = asyncio.get_event_loop().time()
@@ -181,13 +207,21 @@ class IngestionScheduler:
                         logger.error(f"Error in scheduled retention cleanup: {ce}")
                     last_cleanup = now_ts
 
-                # 2. IMERG discovery cycle every SCHEDULER_INTERVAL_MINUTES
+                # 2. Discovery / Ingestion cycles every SCHEDULER_INTERVAL_MINUTES
                 disc_interval = max(60.0, float(settings.SCHEDULER_INTERVAL_MINUTES * 60))
                 if now_ts - last_discovery >= disc_interval:
-                    try:
-                        await self.run_now()
-                    except Exception as de:
-                        logger.error(f"Error in scheduled discovery run: {de}")
+                    if getattr(settings, "NASA_INGESTION_ENABLED", False):
+                        try:
+                            await self.run_now()
+                        except Exception as de:
+                            logger.error(f"Error in scheduled NASA discovery run: {de}")
+
+                    if getattr(settings, "MOSDAC_INGESTION_ENABLED", False):
+                        try:
+                            await self.run_mosdac_now()
+                        except Exception as me:
+                            logger.error(f"Error in scheduled MOSDAC ingestion run: {me}")
+
                     last_discovery = now_ts
 
             except Exception as loop_err:

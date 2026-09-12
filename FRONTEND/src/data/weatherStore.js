@@ -1,3 +1,10 @@
+function toEpochMs(ts) {
+  if (!ts) return 0;
+  if (typeof ts === 'number') return ts;
+  const ms = new Date(ts).getTime();
+  return isNaN(ms) ? 0 : ms;
+}
+
 /**
  * High-performance, Map-based local weather store.
  *
@@ -58,8 +65,12 @@ class WeatherStore {
 
       const existing = this.records.get(id);
       // If WebSocket already delivered a newer event for this point, do NOT overwrite with older snapshot!
-      if (existing && existing.timestamp && existing.timestamp > incomingTime) {
-        continue;
+      if (existing && existing.timestamp) {
+        const existingMs = toEpochMs(existing.timestamp);
+        const incomingMs = toEpochMs(incomingTime);
+        if (existingMs > 0 && incomingMs > 0 && existingMs > incomingMs) {
+          continue;
+        }
       }
 
       this.records.set(id, {
@@ -123,10 +134,14 @@ class WeatherStore {
 
         const existing = this.records.get(id);
         if (existing) {
-          // Stale / Out-of-order check
-          if (existing.timestamp && incomingTime < existing.timestamp) {
-            ignored++;
-            continue;
+          // Stale / Out-of-order check (strict epoch millisecond comparison)
+          if (existing.timestamp) {
+            const existingMs = toEpochMs(existing.timestamp);
+            const incomingMs = toEpochMs(incomingTime);
+            if (existingMs > 0 && incomingMs > 0 && incomingMs < existingMs) {
+              ignored++;
+              continue;
+            }
           }
 
           // In-place update

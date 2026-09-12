@@ -39,6 +39,7 @@ export function IndiaMapSection({
   wsStatus = 'connected',
   wsTelemetry,
   liveSummary,
+  activeSource = 'MOSDAC',
 }) {
   const [showAllStatesModal, setShowAllStatesModal] = useState(false);
   const [showMapControls, setShowMapControls] = useState(false);
@@ -226,6 +227,7 @@ export function IndiaMapSection({
             onSelectDistrict={onSelectDistrict}
             onFitIndia={onFitIndia}
             opacity={opacity}
+            activeSource={activeSource}
           />
         </div>
 
@@ -236,17 +238,19 @@ export function IndiaMapSection({
               className={`w-2 h-2 rounded-full ${
                 wsStatus === 'connected'
                   ? 'bg-emerald-500 animate-pulse'
-                  : wsStatus === 'connecting'
+                  : wsStatus === 'reconnecting' || wsStatus === 'connecting'
                   ? 'bg-amber-500 animate-pulse'
                   : 'bg-rose-500'
               }`}
             />
             <span className="font-medium">
               {wsStatus === 'connected'
-                ? `⚡ Live WebSocket: Connected (${wsTelemetry?.totalPointsUpdated || 0} pts incrementally synced)`
-                : wsStatus === 'connecting'
-                ? '⚡ Connecting to live weather WebSocket...'
-                : '⚡ WebSocket offline — Reconnecting with backoff...'}
+                ? `⚡ Live WebSocket: Connected (${(wsTelemetry?.totalPointsUpdated || 0).toLocaleString()} pts incrementally synced)`
+                : wsStatus === 'reconnecting'
+                ? '⚡ Live WebSocket: Reconnecting...'
+                : wsStatus === 'disconnected'
+                ? '⚡ Live WebSocket: Disconnected'
+                : '⚡ Live WebSocket: Connecting...'}
             </span>
           </div>
 

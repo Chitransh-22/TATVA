@@ -354,6 +354,8 @@ class WeatherIngestionPipeline:
             summary=summary,
             timestamp=obs_time,
             granule_id=granule_id,
+            source="NASA",
+            product="IMERG",
         )
 
     async def process_granule_direct(

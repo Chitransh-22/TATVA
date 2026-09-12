@@ -221,6 +221,18 @@ class MosdacLoader:
                 row_count=inserted_count,
             )
 
+            # 7. Compute regional summaries and clear weather caches
+            try:
+                from app.analytics.aggregator import analytics_aggregator
+                from app.database.connection import AsyncSessionLocal
+                from app.api.weather import clear_weather_cache
+                async with AsyncSessionLocal() as session:
+                    await analytics_aggregator.compute_regional_summaries(session, observation_time, granule_id)
+                    await session.commit()
+                clear_weather_cache()
+            except Exception as agg_err:
+                logger.warning(f"[MOSDAC Loader] Regional summary computation note: {agg_err}")
+
             return {
                 "success": True,
                 "granule_id": granule_id,

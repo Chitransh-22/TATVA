@@ -125,6 +125,21 @@ export function getRainfallColor(val) {
 }
 
 /**
+ * Returns canonical [r, g, b] array for fluid canvas interpolation.
+ */
+export function getPrecipitationRgb(val) {
+  if (!isValidRainfall(val) || val < 0.1) return null;
+  if (val < 2.5) return [56, 189, 248];    // Sky Blue
+  if (val < 7.5) return [34, 197, 94];     // Vibrant Green
+  if (val < 15.0) return [163, 230, 53];   // Lime / Yellow-Green
+  if (val < 30.0) return [250, 204, 21];   // Amber-Yellow
+  if (val < 50.0) return [249, 115, 22];   // Vivid Orange
+  if (val < 100.0) return [239, 68, 68];   // Crimson Red
+  if (val < 200.0) return [217, 70, 239];  // Magenta
+  return [126, 34, 206];                   // Deep Violet
+}
+
+/**
  * Visual styling tokens for category pill badges across dashboard and sidebar.
  */
 export function getCategoryBadgeStyle(category) {
