@@ -1,0 +1,164 @@
+@startuml nasa-pipeline-sequence
+!theme plain
+autonumber
+skinparam defaultFontName "Segoe UI", "Helvetica", "Arial", sans-serif
+skinparam BoxPadding 10
+skinparam ParticipantPadding 10
+skinparam Shadowing true
+
+box "External NASA Data Source" #FEF2F2
+  participant "NASA PPS / OpenSearch" as NASA
+end box
+
+box "Ingestion & Discovery" #F0FDF4
+  participant "IngestionScheduler" as Scheduler
+  participant "GranuleDiscoveryService" as Discovery
+  participant "GranuleDownloader" as Downloader
+end box
+
+box "Message Streaming (Kafka / In-Memory)" #FFFBEB
+  participant "Kafka Bus\n(Topics)" as Kafka
+end box
+
+box "Processing & Transformation" #F8FAFC
+  participant "WeatherIngestionPipeline" as Pipeline
+  participant "DeduplicationLedger" as Dedup
+  participant "GranuleExtractor" as Extractor
+  participant "Affine Converter\n(Rasterio)" as Converter
+  participant "GranuleValidator" as Validator
+  participant "BulkObservationLoader" as BulkLoader
+end box
+
+box "Database (Azure PostgreSQL + PostGIS)" #EFF6FF
+  participant "ingestion_ledger" as DBLedger
+  participant "precipitation_observations\n(Partitioned PostGIS)" as DBObs
+end box
+
+box "Backend API & Real-Time Broadcast" #FAF5FF
+  participant "WeatherWebSocketManager" as WSManager
+  participant "FastAPI REST\n(/api/weather/*)" as REST
+end box
+
+box "Frontend Client (React 19 + Leaflet 1.9.4)" #FDF2F8
+  participant "useWeatherWebSocket" as ClientWS
+  participant "WeatherStore\n(In-Memory Map)" as ClientStore
+  participant "Leaflet WeatherMap\n(CanvasWeatherLayer)" as MapView
+end box
+
+== 1. Discovery Phase ==
+Scheduler -> Discovery : Trigger discovery run (every 30m / startup / on-demand)
+activate Discovery
+Discovery -> NASA : GET /opensearch?q=precip_7d&limit=50
+NASA --> Discovery : OpenSearch JSON catalog entries
+alt OpenSearch unavailable or 0 granules
+  Discovery -> NASA : GET /text/imerg/gis/{YYYY}/{MM}/ (PPS directory listing)
+  NASA --> Discovery : Plaintext directory listing (.zip)
+end
+Discovery -> Discovery : parse_imerg_filename() regex match
+Discovery -> DBLedger : register_discovered(granule_id, status="DISCOVERED")
+Discovery -> Kafka : publish(topic="ritu.granules.discovered", key=granule_id)
+deactivate Discovery
+
+== 2. Download Phase ==
+Kafka -> Pipeline : Deliver "ritu.granules.discovered" event
+Pipeline -> Downloader : handle_discovered_granule(msg)
+activate Downloader
+Downloader -> DBLedger : update_status("DOWNLOADING")
+Downloader -> NASA : GET /imerg/gis/{YYYY}/{MM}/{file_name} (HTTP Basic Auth)
+NASA --> Downloader : Stream chunks (128 KB) -> write to {file_name}.part
+Downloader -> Downloader : is_valid_zip() CRC32 integrity check
+Downloader -> Downloader : Atomic rename .part -> {file_name}.zip
+Downloader -> Downloader : compute_file_sha256()
+Downloader -> DBLedger : update_status("DOWNLOADED", checksum_sha256)
+Downloader -> Kafka : publish(topic="ritu.granules.raw", key=granule_id, checksum)
+deactivate Downloader
+
+== 3. Deduplication & Routing Phase ==
+Kafka -> Pipeline : Deliver "ritu.granules.raw" event
+Pipeline -> Dedup : evaluate_and_route(granule_id, file_path, checksum)
+activate Dedup
+Dedup -> DBLedger : SELECT * FROM ingestion_ledger WHERE granule_id = :id OR checksum = :chk
+alt Duplicate granule or matching completed checksum
+  Dedup -> Kafka : publish(topic="ritu.granules.status", action="SKIPPED")
+else Genuine new granule verified on disk
+  Dedup -> DBLedger : UPDATE status="NEW"
+  Dedup -> Kafka : publish(topic="ritu.granules.status", action="NEW")
+end
+deactivate Dedup
+
+== 4. Extraction & Affine Transformation Phase ==
+Kafka -> Pipeline : Deliver "ritu.granules.status" (action="NEW")
+activate Pipeline
+Pipeline -> DBLedger : update_status("EXTRACTING")
+Pipeline -> Extractor : extract_zip(zip_path, granule_id)
+Extractor -> Extractor : Sanitize filenames & unpack to data/extracted/{granule_id}/
+Extractor --> Pipeline : layer_files {precipitation, ice, liquid, liquidPercent, numPrecip, numValid}
+Pipeline -> DBLedger : update_status("EXTRACTED")
+
+Pipeline -> DBLedger : update_status("TRANSFORMING")
+Pipeline -> Converter : convert_imerg_to_standard_csv(layer_files, granule_id, obs_time)
+activate Converter
+Converter -> Converter : Read 6 GeoTIFF rasters via rasterio
+Converter -> Converter : Generate coordinate meshgrid via Affine transform\nlon = c + (col + 0.5)*a + (row + 0.5)*b\nlat = f + (col + 0.5)*d + (row + 0.5)*e
+Converter -> Converter : Clip coordinates to India bounds [6-37.5°N, 68-97.5°E]
+Converter -> Converter : Replace -9999.0 nodata, drop NaNs, construct DataFrame
+Converter -> Converter : Write standardized CSV to data/transformed/{granule_id}.csv
+Converter --> Pipeline : summary {output_file, row_count, crs, min/max stats}
+deactivate Converter
+
+== 5. Validation & Dead-Letter Queue Phase ==
+Pipeline -> DBLedger : update_status("VALIDATING")
+Pipeline -> Validator : handle_transformed_file(csv_path, granule_id, obs_time)
+activate Validator
+Validator -> Validator : validate_csv() (10 columns, lat/lon bounds, sanity <= 5000 mm/hr)
+alt Validation Failed
+  Validator -> Validator : Write data/dlq/{granule_id}_dlq_error.json
+  Validator -> DBLedger : update_status("FAILED_VALIDATION")
+  Validator -> Kafka : publish(topic="ritu.granules.dlq", error_reason)
+else Validation Passed
+  Validator -> DBLedger : update_status("VALIDATED", checksum)
+  Validator -> Kafka : publish(topic="ritu.granules.transformed", key=granule_id)
+end
+deactivate Validator
+
+== 6. Bulk Database Ingestion & Persistence ==
+Kafka -> Pipeline : Deliver "ritu.granules.transformed" event
+Pipeline -> BulkLoader : load_csv(csv_path, granule_id, obs_time)
+activate BulkLoader
+BulkLoader -> DBLedger : update_status("LOADING")
+BulkLoader -> DBObs : ensure_monthly_partition(obs_time)
+BulkLoader -> DBObs : asyncpg COPY FROM CSV INTO precipitation_observations_staging
+BulkLoader -> DBObs : INSERT INTO precipitation_observations\nSELECT ..., ST_SetSRID(ST_MakePoint(lon, lat), 4326), ...\nFROM precipitation_observations_staging\nON CONFLICT (observation_time, granule_id, latitude, longitude) DO UPDATE
+BulkLoader -> DBObs : DELETE FROM precipitation_observations_staging WHERE granule_id = :id
+BulkLoader -> DBLedger : update_status("PERSISTED") -> update_status("COMPLETED")
+deactivate BulkLoader
+
+== 7. Analytics Rollups & Real-Time Broadcast ==
+Pipeline -> Pipeline : analytics_aggregator.compute_rollups_for_observation(obs_time)
+Pipeline -> Pipeline : _broadcast_granule_websocket(csv_path, granule_id, obs_time)
+Pipeline -> WSManager : broadcast_batch(updates=sample_400_pts, summary, granule_id)
+deactivate Pipeline
+
+WSManager -> ClientWS : WebSocket text frame: {"type": "weather_batch", "action": "upsert", "updates": [...]}
+ClientWS -> ClientStore : applyBatch(batch)
+ClientStore -> ClientStore : Timestamp order check & update in-memory coordinate Map
+ClientStore -> MapView : weatherStore.subscribe() trigger
+MapView -> MapView : requestAnimationFrame() -> Canvas redraw with vector clipping & color ramp
+
+== 8. Client Initial Load / HTTP Snapshot Synchronization ==
+ClientWS -> REST : GET /api/weather/india/overview?grid_step=0.5
+REST -> DBObs : Query latest active observation window & summaries
+DBObs --> REST : National summary + state rollups + downsampled grid_points
+REST --> ClientWS : JSON response
+ClientWS -> ClientStore : loadSnapshot(scope, snapshotPoints, timestamp)
+ClientStore -> MapView : Initial Canvas render
+
+== 9. Rolling 7-Day Retention Cleanup Flow ==
+Scheduler -> DBObs : DELETE FROM precipitation_observations WHERE observation_time < (MAX(obs) - 7 days) RETURNING lat, lon
+DBObs --> Scheduler : deleted_rows (expired observations)
+Scheduler -> WSManager : broadcast_removals(deleted_point_ids)
+WSManager -> ClientWS : WebSocket text frame: {"type": "weather_remove", "ids": [...]}
+ClientWS -> ClientStore : removeIds(ids)
+ClientStore -> MapView : Redraw Canvas (pruned expired points)
+
+@enduml
