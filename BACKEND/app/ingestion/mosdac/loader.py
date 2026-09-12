@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ import pandas as pd
 
 from app.config import settings
 from app.database.connection import is_database_reachable, connect_asyncpg_with_retry
-from app.database.migrations import ensure_monthly_partition
+from app.database.migrations import ensure_monthly_partition, ensure_mosdac_monthly_partition
 
 logger = logging.getLogger(__name__)
 
@@ -258,5 +259,291 @@ class MosdacLoader:
                 except Exception:
                     pass
 
+    async def record_product_ledger_status(
+        self,
+        product_id: str,
+        category: str,
+        granule_id: str,
+        status: str,
+        observation_time: datetime,
+        file_name: Optional[str] = None,
+        source_url: Optional[str] = None,
+        file_size_bytes: Optional[int] = None,
+        raw_file_path: Optional[str] = None,
+        transformed_file_path: Optional[str] = None,
+        row_count: int = 0,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+        mean_value: Optional[float] = None,
+        unit: Optional[str] = None,
+        summary_dict: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Upsert product ledger record for tracking multi-product granule lifecycle and guaranteeing idempotency."""
+        if not is_database_reachable():
+            logger.warning(f"[MOSDAC Product Ledger] Database unreachable; skipping ledger record for {granule_id}")
+            return
+
+        conn = None
+        try:
+            conn = await connect_asyncpg_with_retry(max_retries=2, timeout=10.0)
+            now_utc = datetime.now(timezone.utc)
+            summary_json_str = json.dumps(summary_dict, default=str) if summary_dict else None
+
+            query = """
+            INSERT INTO mosdac_product_ledger (
+                product_id, category, granule_id, file_name, source_url, observation_time,
+                file_size_bytes, status, row_count, min_value, max_value, mean_value,
+                unit, summary_json, raw_file_path, transformed_file_path, error_message, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            ON CONFLICT (granule_id) DO UPDATE
+            SET status = EXCLUDED.status,
+                row_count = CASE WHEN EXCLUDED.row_count > 0 THEN EXCLUDED.row_count ELSE mosdac_product_ledger.row_count END,
+                min_value = EXCLUDED.min_value,
+                max_value = EXCLUDED.max_value,
+                mean_value = EXCLUDED.mean_value,
+                unit = EXCLUDED.unit,
+                summary_json = COALESCE(EXCLUDED.summary_json, mosdac_product_ledger.summary_json),
+                error_message = EXCLUDED.error_message,
+                updated_at = EXCLUDED.updated_at;
+            """
+            await conn.execute(
+                query,
+                product_id,
+                category,
+                granule_id,
+                file_name or f"{granule_id}.h5",
+                source_url or f"{settings.MOSDAC_DOWNLOAD_URL}?id={granule_id}",
+                observation_time,
+                file_size_bytes,
+                status,
+                row_count,
+                min_value,
+                max_value,
+                mean_value,
+                unit,
+                summary_json_str,
+                raw_file_path,
+                transformed_file_path,
+                error_message,
+                now_utc,
+            )
+        except Exception as e:
+            logger.error(f"[MOSDAC Product Ledger] Failed to update ledger for {granule_id}: {e}")
+        finally:
+            if conn:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
+
+    async def load_product_observations(
+        self,
+        product_id: str,
+        category: str,
+        granule_id: str,
+        observation_time: datetime,
+        csv_path: Optional[Path] = None,
+        df: Optional[pd.DataFrame] = None,
+        summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Bulk load domain observations into PostgreSQL partitioned table (or precipitation_observations for HEM)."""
+        # If rainfall HEM/IMR: preserve existing precipitation_observations table
+        if product_id in ("3SIMG_L2B_HEM", "3SIMG_L2G_IMR"):
+            res = await self.load_granule_observations(
+                granule_id=granule_id,
+                observation_time=observation_time,
+                csv_path=csv_path,
+                df=df,
+            )
+            # Also record in unified mosdac_product_ledger
+            await self.record_product_ledger_status(
+                product_id=product_id,
+                category=category,
+                granule_id=granule_id,
+                status="COMPLETED" if res.get("success") else "FAILED",
+                observation_time=observation_time,
+                row_count=res.get("row_count", 0),
+                min_value=summary.get("min_value", 0.0) if summary else 0.0,
+                max_value=summary.get("max_value", 0.0) if summary else 0.0,
+                mean_value=summary.get("mean_value", 0.0) if summary else 0.0,
+                unit="mm/hr",
+                summary_dict=summary,
+            )
+            return res
+
+        # For all other products (CTP, UTH, OLR, SST, FOG, SNW, AOD): load into mosdac_observations
+        start_time = time.time()
+        logger.info(f"[MOSDAC Loader] Starting domain DB ingestion for {product_id} ({granule_id})...")
+
+        await self.record_product_ledger_status(
+            product_id=product_id,
+            category=category,
+            granule_id=granule_id,
+            status="LOADING",
+            observation_time=observation_time,
+            transformed_file_path=str(csv_path) if csv_path else None,
+            summary_dict=summary,
+        )
+
+        if not is_database_reachable():
+            err_msg = "Database host unreachable; skipping persistence"
+            logger.warning(f"[MOSDAC Loader] {err_msg}")
+            await self.record_product_ledger_status(
+                product_id=product_id,
+                category=category,
+                granule_id=granule_id,
+                status="FAILED",
+                observation_time=observation_time,
+                error_message=err_msg,
+            )
+            return {"success": False, "error": err_msg, "row_count": 0}
+
+        conn = None
+        try:
+            conn = await connect_asyncpg_with_retry(max_retries=3, timeout=30.0)
+
+            # 1. Clean previous staging rows for this granule
+            await conn.execute(
+                "DELETE FROM mosdac_observations_staging WHERE granule_id = $1 AND product_id = $2;",
+                granule_id,
+                product_id,
+            )
+
+            # 2. Ensure dynamic monthly partition exists
+            await ensure_mosdac_monthly_partition(conn, observation_time)
+
+            # 3. Stream records via asyncpg copy_to_table
+            logger.info(f"[MOSDAC Loader] Executing asyncpg COPY to mosdac_observations_staging for {granule_id}...")
+
+            staging_columns = [
+                "granule_id",
+                "product_id",
+                "category",
+                "observation_time",
+                "latitude",
+                "longitude",
+                "value",
+                "secondary_value",
+                "unit",
+                "state",
+                "district",
+            ]
+
+            if csv_path and csv_path.exists():
+                with open(csv_path, "rb") as f:
+                    await conn.copy_to_table(
+                        "mosdac_observations_staging",
+                        source=f,
+                        format="csv",
+                        header=True,
+                        columns=staging_columns,
+                    )
+            elif df is not None and len(df) > 0:
+                csv_buffer = io.BytesIO()
+                df.to_csv(csv_buffer, index=False)
+                csv_buffer.seek(0)
+                await conn.copy_to_table(
+                    "mosdac_observations_staging",
+                    source=csv_buffer,
+                    format="csv",
+                    header=True,
+                    columns=staging_columns,
+                )
+            else:
+                raise ValueError("Neither valid csv_path nor non-empty df provided for loading")
+
+            # 4. Upsert from staging into mosdac_observations
+            logger.info(f"[MOSDAC Loader] Upserting staging records into mosdac_observations for {product_id}...")
+            upsert_query = """
+            INSERT INTO mosdac_observations (
+                granule_id, product_id, category, observation_time, latitude, longitude, geom,
+                value, secondary_value, unit, state, district
+            )
+            SELECT
+                granule_id,
+                product_id,
+                category,
+                observation_time,
+                latitude,
+                longitude,
+                ST_SetSRID(ST_MakePoint(longitude, latitude), 4326),
+                value,
+                secondary_value,
+                unit,
+                state,
+                district
+            FROM mosdac_observations_staging
+            WHERE granule_id = $1 AND product_id = $2
+            ON CONFLICT (observation_time, product_id, granule_id, latitude, longitude) DO UPDATE
+            SET value = EXCLUDED.value,
+                secondary_value = EXCLUDED.secondary_value,
+                geom = EXCLUDED.geom;
+            """
+            result_tag = await conn.execute(upsert_query, granule_id, product_id)
+
+            # 5. Clean up staging rows
+            await conn.execute(
+                "DELETE FROM mosdac_observations_staging WHERE granule_id = $1 AND product_id = $2;",
+                granule_id,
+                product_id,
+            )
+
+            # Count rows inserted
+            inserted_count = len(df) if df is not None else 0
+            if inserted_count == 0 and csv_path and csv_path.exists():
+                inserted_count = sum(1 for _ in open(csv_path, "r")) - 1
+
+            duration = time.time() - start_time
+            logger.info(
+                f"[MOSDAC Loader] {product_id} granule {granule_id} successfully persisted ({inserted_count:,} rows, "
+                f"{duration:.2f}s, SQL result: {result_tag})"
+            )
+
+            # 6. Update ledger to COMPLETED
+            await self.record_product_ledger_status(
+                product_id=product_id,
+                category=category,
+                granule_id=granule_id,
+                status="COMPLETED",
+                observation_time=observation_time,
+                row_count=inserted_count,
+                min_value=summary.get("min_value") if summary else None,
+                max_value=summary.get("max_value") if summary else None,
+                mean_value=summary.get("mean_value") if summary else None,
+                unit=summary.get("unit") if summary else None,
+                summary_dict=summary,
+            )
+
+            return {
+                "success": True,
+                "granule_id": granule_id,
+                "product_id": product_id,
+                "row_count": inserted_count,
+                "duration_seconds": round(duration, 2),
+                "sql_result": result_tag,
+            }
+
+        except Exception as e:
+            err_msg = f"Database ingestion failed for {product_id} ({granule_id}): {e}"
+            logger.error(f"[MOSDAC Loader] {err_msg}", exc_info=True)
+            await self.record_product_ledger_status(
+                product_id=product_id,
+                category=category,
+                granule_id=granule_id,
+                status="FAILED",
+                observation_time=observation_time,
+                error_message=err_msg,
+            )
+            return {"success": False, "error": str(e), "row_count": 0}
+        finally:
+            if conn:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
+
 
 mosdac_loader = MosdacLoader()
+

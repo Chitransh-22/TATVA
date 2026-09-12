@@ -63,15 +63,19 @@ class MosdacClient:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Query MOSDAC OpenSearch catalog for available dataset granules."""
+        """Query MOSDAC OpenSearch catalog for available dataset granules.
+        
+        Uses official query parameter 'datasetId' (per MOSDAC OpenAPI 3.0.1 specification).
+        """
         url = settings.MOSDAC_SEARCH_URL
-        params: Dict[str, Any] = {"prod": dataset, "count": count}
+        # MOSDAC OpenSearch API strictly requires 'datasetId' query param
+        params: Dict[str, Any] = {"datasetId": dataset, "count": count}
         if start_date:
             params["start"] = start_date
         if end_date:
             params["end"] = end_date
 
-        logger.info(f"[MOSDAC Client] Searching granules for product '{dataset}' (count={count})...")
+        logger.info(f"[MOSDAC Client] Searching granules for datasetId='{dataset}' (count={count})...")
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
@@ -79,50 +83,59 @@ class MosdacClient:
                 response.raise_for_status()
                 data = response.json()
 
-                features = data.get("features", [])
+                # MOSDAC OpenSearch returns list under 'entries'
+                entries = data.get("entries", [])
+                if not entries and "features" in data:
+                    entries = data.get("features", [])
+
                 granules: List[Dict[str, Any]] = []
 
-                for feat in features:
-                    props = feat.get("properties", {})
-                    granule_id = props.get("id") or props.get("title") or feat.get("id")
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    props = entry.get("properties", entry)
+                    meta_id = str(entry.get("id") or props.get("id") or "")
+                    identifier = entry.get("identifier") or entry.get("title") or props.get("title") or meta_id
+                    granule_id = identifier.replace(".h5", "").replace(".H5", "")
+
                     if not granule_id:
                         continue
 
-                    # Parse observation time
-                    # MOSDAC properties often contain 'start_time', 'time', or the filename timestamp
-                    obs_time_str = props.get("start_time") or props.get("time") or props.get("date")
+                    # Parse observation timestamp
                     obs_time = None
+                    obs_time_str = entry.get("updated") or props.get("start_time") or props.get("time") or props.get("date")
                     if obs_time_str:
                         try:
-                            obs_time = datetime.fromisoformat(obs_time_str.replace("Z", "+00:00"))
+                            obs_time = datetime.fromisoformat(str(obs_time_str).replace("Z", "+00:00"))
                         except Exception:
                             pass
 
                     # Extract timestamp from granule_id if obs_time missing:
-                    # e.g., 3SIMG_12SEP2026_1100_L2B_HEM_V01R00
+                    # e.g., 3SIMG_12SEP2026_1400_L2B_CTP_V01R00
                     if not obs_time and len(granule_id) >= 20:
                         try:
                             parts = granule_id.split("_")
                             if len(parts) >= 3:
                                 date_str = parts[1]  # 12SEP2026
-                                time_str = parts[2]  # 1100
+                                time_str = parts[2]  # 1400
                                 obs_time = datetime.strptime(
                                     f"{date_str}_{time_str}", "%d%b%Y_%H%M"
                                 ).replace(tzinfo=timezone.utc)
                         except Exception:
                             pass
 
-                    download_url = f"{settings.MOSDAC_DOWNLOAD_URL}?id={granule_id}"
-                    file_size = props.get("size") or props.get("file_size")
+                    download_url = f"{settings.MOSDAC_DOWNLOAD_URL}?id={meta_id or granule_id}"
+                    file_size = entry.get("size") or props.get("size") or props.get("file_size")
 
                     granules.append({
                         "granule_id": granule_id,
+                        "meta_id": meta_id,
                         "file_name": f"{granule_id}.h5",
                         "dataset": dataset,
                         "observation_time": obs_time,
                         "file_size_bytes": file_size,
                         "download_url": download_url,
-                        "raw_properties": props,
+                        "raw_properties": entry,
                     })
 
                 # Sort newest observation first
@@ -130,11 +143,11 @@ class MosdacClient:
                     key=lambda g: g["observation_time"] or datetime.min.replace(tzinfo=timezone.utc),
                     reverse=True
                 )
-                logger.info(f"[MOSDAC Client] Discovered {len(granules)} granules for {dataset}.")
+                logger.info(f"[MOSDAC Client] Discovered {len(granules)} granules for datasetId='{dataset}'.")
                 return granules
 
             except Exception as e:
-                logger.error(f"[MOSDAC Client] Catalog search failed: {e}")
+                logger.error(f"[MOSDAC Client] Catalog search failed for {dataset}: {e}")
                 raise
 
     async def get_latest_granule(
@@ -147,23 +160,33 @@ class MosdacClient:
     async def download_granule(
         self,
         granule_id: str,
+        meta_id: Optional[str] = None,
         dest_path: Optional[Path] = None,
         max_retries: int = 3,
     ) -> Path:
         """Download granule H5 file from MOSDAC using JWT bearer authorization."""
-        token = await self.get_token()
-        download_url = f"{settings.MOSDAC_DOWNLOAD_URL}?id={granule_id}"
+        from app.config import BACKEND_DIR
+        # Check if local scratch or raw directory already has this granule
+        local_candidates = [
+            dest_path,
+            settings.DATA_MOSDAC_RAW_DIR / f"{granule_id}.h5",
+            BACKEND_DIR.parent / "scratch" / f"{granule_id}.h5",
+        ]
+        for cand in local_candidates:
+            if cand and cand.exists() and cand.stat().st_size > 100 * 1024:
+                logger.info(f"[MOSDAC Client] Granule {granule_id} already exists locally at {cand}")
+                return cand.resolve()
 
+        # If dest_path not specified, default to DATA_MOSDAC_RAW_DIR
         if dest_path is None:
             settings.ensure_directories()
             dest_path = settings.DATA_MOSDAC_RAW_DIR / f"{granule_id}.h5"
         else:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # If already downloaded and valid, return existing file
-        if dest_path.exists() and dest_path.stat().st_size > 1024 * 1024:
-            logger.info(f"[MOSDAC Client] Granule {granule_id} already exists locally at {dest_path}")
-            return dest_path
+        token = await self.get_token()
+        target_id = meta_id or granule_id
+        download_url = f"{settings.MOSDAC_DOWNLOAD_URL}?id={target_id}"
 
         temp_path = dest_path.with_suffix(".tmp")
         headers = {"Authorization": f"Bearer {token}"}

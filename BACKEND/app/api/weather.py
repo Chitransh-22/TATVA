@@ -1347,6 +1347,8 @@ async def weather_websocket_endpoint(websocket: WebSocket):
                 param = msg.get("parameter", "precipitation")
                 bounds = msg.get("bounds")
                 zoom = msg.get("zoom")
+                product = msg.get("product")
+                category = msg.get("category")
                 await weather_ws_manager.update_subscription(
                     client_id=client_id,
                     state=state,
@@ -1355,6 +1357,8 @@ async def weather_websocket_endpoint(websocket: WebSocket):
                     parameter=param,
                     bounds=bounds,
                     zoom=zoom,
+                    product=product,
+                    category=category,
                 )
             elif action == "ping":
                 await weather_ws_manager.handle_ping(client_id)

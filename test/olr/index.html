@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ISRO INSAT-3DS Outgoing Longwave Radiation (OLR) &bull; Standalone Test Map</title>
+  
+  <!-- Leaflet 1.9.4 -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  
+  <!-- Shared CSS & Test Harness -->
+  <link rel="stylesheet" href="../common/map-styles.css">
+  <script src="../common/test-harness.js"></script>
+</head>
+<body>
+
+  <div class="top-nav">
+    <a href="../index.html" class="nav-link">← Test Center Hub</a>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- Dashboard Card -->
+  <div class="dashboard-card">
+    <div class="title-row">
+      <div class="main-title">
+        <span>☀️ INSAT-3DS Outgoing Longwave Radiation (OLR)</span>
+      </div>
+      <div class="category-tag cat-weather">Weather</div>
+      <div class="live-badge" id="liveBadge">
+        <span class="pulse-dot"></span> LIVE SATELLIVE FEED
+      </div>
+    </div>
+
+    <div class="subtitle">
+      ISRO SAC Ahmedabad &bull; 3SIMG_L2B_OLR &bull; Thermal Infrared Flux &bull; 30-min Cadence
+    </div>
+
+    <div class="stats-strip">
+      <div class="stat-box">
+        <span class="stat-label">Data Cells</span>
+        <span class="stat-val" id="statTotalPoints">172,712</span>
+      </div>
+      <div class="stat-box">
+        <span class="stat-label">Min Flux (Convective)</span>
+        <span class="stat-val" id="statMinValue" style="color:#a855f7;">92.9 W/m²</span>
+      </div>
+      <div class="stat-box">
+        <span class="stat-label">Max Flux (Warm Land)</span>
+        <span class="stat-val" id="statMaxValue" style="color:#ef4444;">320.1 W/m²</span>
+      </div>
+      <div class="stat-box">
+        <span class="stat-label">Mean Radiation</span>
+        <span class="stat-val" id="statMeanValue">234.6 W/m²</span>
+      </div>
+    </div>
+
+    <div class="granule-meta" id="granuleMeta">
+      Granule: <b>3SIMG_12SEP2026_1400_L2B_OLR_V01R00</b> &bull; Obs: <b>2026-09-12 19:30:00 IST</b>
+    </div>
+
+    <div class="controls-row">
+      <div class="control-item">
+        <label for="filterSelect">Flux Filter:</label>
+        <select id="filterSelect" onchange="testMap.applyFilter(this.value)">
+          <option value="50.0">All Radiation (&gt; 50 W/m²)</option>
+          <option value="120.0">Deep Convective Storms (&lt; 180 W/m²)</option>
+          <option value="180.0">Moderate Convection (180 - 240 W/m²)</option>
+          <option value="240.0">Clear / Warm Surface (&gt; 240 W/m²)</option>
+        </select>
+      </div>
+
+      <div class="control-item">
+        <label for="opacitySlider">Opacity:</label>
+        <input type="range" id="opacitySlider" min="20" max="100" value="85" style="width:70px;" oninput="testMap.updateOpacity(this.value)">
+      </div>
+
+      <button class="btn-primary" onclick="testMap.refresh()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <!-- Legend Card -->
+  <div class="legend-card">
+    <div class="legend-title">
+      <span>Outgoing Longwave Radiation</span>
+      <span style="font-weight:normal; color:#64748b;">(W/m²)</span>
+    </div>
+    <div class="legend-items">
+      <div class="legend-row">
+        <div class="color-swatch" style="background:#dc2626;"></div>
+        <div class="legend-label">&gt; 280 W/m²</div>
+        <div class="legend-desc">Arid / Hot Ground (High Flux)</div>
+      </div>
+      <div class="legend-row">
+        <div class="color-swatch" style="background:#f97316;"></div>
+        <div class="legend-label">240 – 280</div>
+        <div class="legend-desc">Warm Clear Sky</div>
+      </div>
+      <div class="legend-row">
+        <div class="color-swatch" style="background:#eab308;"></div>
+        <div class="legend-label">200 – 240</div>
+        <div class="legend-desc">Moderate Cloud / Haze</div>
+      </div>
+      <div class="legend-row">
+        <div class="color-swatch" style="background:#10b981;"></div>
+        <div class="legend-label">160 – 200</div>
+        <div class="legend-desc">Thick Mid-Level Cloud</div>
+      </div>
+      <div class="legend-row">
+        <div class="color-swatch" style="background:#06b6d4;"></div>
+        <div class="legend-label">130 – 160</div>
+        <div class="legend-desc">Deep Convective Cloud</div>
+      </div>
+      <div class="legend-row">
+        <div class="color-swatch" style="background:#a855f7;"></div>
+        <div class="legend-label">&lt; 130 W/m²</div>
+        <div class="legend-desc">Cold Storm Tops (Very Low Flux)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <div>
+      <span>🇮🇳 Survey of India Georeferenced</span> &bull;
+      <span id="statusBarText">Initializing map...</span>
+    </div>
+    <div class="status-highlight" id="liveSyncCounter">
+      ⚡ Live WebSocket: Connecting...
+    </div>
+  </div>
+
+  <script>
+    const testMap = new MosdacTestMap({
+      productId: '3SIMG_L2B_OLR',
+      productName: 'Outgoing Longwave Radiation (OLR)',
+      category: 'weather',
+      unit: 'W/m²',
+      defaultMinThreshold: 50.0,
+      colorScale: [
+        { min: 280.0, color: '#dc2626', label: 'Arid / Hot Land Surface' },
+        { min: 240.0, color: '#f97316', label: 'Warm Clear Sky' },
+        { min: 200.0, color: '#eab308', label: 'Moderate Cloud / Haze' },
+        { min: 160.0, color: '#10b981', label: 'Thick Mid-Level Cloud' },
+        { min: 130.0, color: '#06b6d4', label: 'Deep Convective Cloud' },
+        { min: 50.0,  color: '#a855f7', label: 'Cold High Cloud Tops' }
+      ]
+    });
+  </script>
+</body>
+</html>

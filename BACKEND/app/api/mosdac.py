@@ -11,6 +11,15 @@ from app.config import settings
 from app.database.connection import is_database_reachable, connect_asyncpg_with_retry
 from app.ingestion.mosdac.pipeline import mosdac_pipeline
 from app.ingestion.mosdac.client import mosdac_client
+from app.ingestion.mosdac.registry import (
+    MOSDAC_PRODUCTS,
+    ProductCategory,
+    ProductStatus,
+    get_product_definition,
+    get_available_products,
+)
+from app.ingestion.topics import MOSDAC_TOPICS
+from app.ingestion.kafka_bus import kafka_bus
 
 logger = logging.getLogger(__name__)
 
@@ -323,3 +332,305 @@ async def trigger_mosdac_test_broadcast(
     """[DEV/TEST ONLY - Step 12] Publishes a REAL existing MOSDAC observation as a test WebSocket event."""
     result = await mosdac_pipeline.broadcast_real_observation(granule_id=granule_id, is_test_event=True)
     return result
+
+
+# =============================================================================
+# MODULAR MULTI-PRODUCT MOSDAC ENDPOINTS (Weather, Environment, Ocean)
+# =============================================================================
+
+@router.get("/kafka/health")
+async def get_mosdac_kafka_health() -> Dict[str, Any]:
+    """Health check for the 5 MOSDAC Kafka domain topics and event bus connection."""
+    return {
+        "status": "HEALTHY",
+        "kafka_enabled": settings.KAFKA_ENABLED,
+        "is_connected": kafka_bus.is_connected,
+        "bus_mode": "KAFKA_CLUSTER" if kafka_bus.is_connected else "ASYNCHRONOUS_IN_MEMORY_EVENT_BUS",
+        "total_topics": len(MOSDAC_TOPICS),
+        "total_domain_topics": len(MOSDAC_TOPICS),
+        "mosdac_topics": list(MOSDAC_TOPICS),
+        "domain_topics": [
+            {
+                "topic": topic,
+                "domain": topic.split(".")[-1],
+                "status": "ACTIVE",
+                "queue_size": kafka_bus._memory_queues[topic].qsize() if topic in kafka_bus._memory_queues else 0,
+            }
+            for topic in MOSDAC_TOPICS
+        ],
+        "message_key_format": "MOSDAC:{product}:{observation_time}",
+    }
+
+
+@router.get("/products")
+async def list_mosdac_products(
+    category: Optional[str] = Query(None, description="Filter by category (weather, environment, ocean)"),
+) -> Dict[str, Any]:
+    """List all supported MOSDAC products with operational status, toggles, and metadata."""
+    products_list = []
+    for prod_id, meta in MOSDAC_PRODUCTS.items():
+        if category and meta["category"].value != category.lower():
+            continue
+
+        is_enabled = mosdac_pipeline.is_product_enabled(prod_id)
+        cached = mosdac_pipeline.get_latest_observation(prod_id)
+
+        products_list.append({
+            "product_id": prod_id,
+            "name": meta["name"],
+            "category": meta["category"].value,
+            "satellite": meta["satellite"],
+            "sensor": meta["sensor"],
+            "level": meta["level"],
+            "description": meta["description"],
+            "unit": meta["unit"],
+            "spatial_resolution": meta["spatial_resolution"],
+            "temporal_frequency": meta["temporal_frequency"],
+            "coverage": meta["coverage"],
+            "operational_status": meta["operational_status"].value,
+            "unavailability_reason": meta.get("unavailability_reason"),
+            "is_enabled": is_enabled,
+            "test_map_path": meta["test_map_path"],
+            "render_type": meta["render_type"],
+            "has_live_data": cached is not None,
+            "latest_observation_time": cached["summary"]["observation_time_utc"] if cached else None,
+        })
+
+    return {
+        "status": "SUCCESS",
+        "total_products": len(products_list),
+        "products": products_list,
+    }
+
+
+@router.get("/products/{product_id}/latest")
+async def get_product_latest(product_id: str) -> Dict[str, Any]:
+    """Get metadata and statistical summary for the latest observation of a specific product."""
+    meta = get_product_definition(product_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Product '{product_id}' not found in registry")
+
+    # 1. In-memory cache
+    cached = mosdac_pipeline.get_latest_observation(product_id)
+    if cached:
+        summary = dict(cached["summary"])
+        obs_time = datetime.fromisoformat(summary["observation_time_utc"])
+        now = datetime.now(timezone.utc)
+        current_age_minutes = round((now - obs_time).total_seconds() / 60.0, 1)
+        summary["current_data_age_minutes"] = current_age_minutes
+        summary["is_live_fresh"] = current_age_minutes < 180
+        return {"status": "SUCCESS", "source": "cache", "data": summary}
+
+    # 2. Database query from mosdac_product_ledger
+    if is_database_reachable():
+        try:
+            conn = await connect_asyncpg_with_retry(max_retries=2, timeout=5.0)
+            ledger_row = await conn.fetchrow(
+                """
+                SELECT product_id, category, granule_id, observation_time, row_count,
+                       min_value, max_value, mean_value, unit, summary_json, updated_at
+                FROM mosdac_product_ledger
+                WHERE product_id = $1 AND status = 'COMPLETED'
+                ORDER BY observation_time DESC
+                LIMIT 1;
+                """,
+                product_id,
+            )
+            await conn.close()
+
+            if ledger_row:
+                obs_time = ledger_row["observation_time"]
+                now = datetime.now(timezone.utc)
+                age_minutes = round((now - obs_time).total_seconds() / 60.0, 1)
+                ist_time = obs_time + timedelta(hours=5, minutes=30)
+                summary = {
+                    "granule_id": ledger_row["granule_id"],
+                    "product_id": product_id,
+                    "category": ledger_row["category"],
+                    "satellite": meta.get("satellite", "INSAT-3DS"),
+                    "sensor": meta.get("sensor", "Imager"),
+                    "observation_time_utc": obs_time.isoformat(),
+                    "observation_time_ist": ist_time.strftime("%Y-%m-%d %H:%M:%S IST"),
+                    "data_age_minutes": age_minutes,
+                    "is_live_fresh": age_minutes < 180,
+                    "total_points": ledger_row["row_count"],
+                    "min_value": ledger_row["min_value"],
+                    "max_value": ledger_row["max_value"],
+                    "mean_value": ledger_row["mean_value"],
+                    "unit": ledger_row["unit"] or meta.get("unit"),
+                    "db_persisted": True,
+                }
+                return {"status": "SUCCESS", "source": "database", "data": summary}
+        except Exception as db_err:
+            logger.warning(f"[MOSDAC API] DB query for {product_id} latest summary failed: {db_err}")
+
+    # 3. If unavailable product
+    if meta.get("operational_status") == ProductStatus.UNAVAILABLE:
+        return {
+            "status": "UNAVAILABLE",
+            "product_id": product_id,
+            "message": meta.get("unavailability_reason", "Product currently unavailable from upstream satellite feed"),
+        }
+
+    return {
+        "status": "NO_DATA",
+        "product_id": product_id,
+        "message": f"No observation data cached or in database for {product_id}. Trigger ingestion to fetch.",
+    }
+
+
+@router.get("/products/{product_id}/points")
+async def get_product_points(
+    product_id: str,
+    limit: int = Query(50000, description="Maximum number of coordinate points to return"),
+    min_val: Optional[float] = Query(None, description="Optional minimum value filter"),
+) -> Dict[str, Any]:
+    """Get observation points [latitude, longitude, value] for test map visualization."""
+    meta = get_product_definition(product_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Product '{product_id}' not found in registry")
+
+    # 1. Check in-memory cache
+    cached = mosdac_pipeline.get_latest_observation(product_id)
+    if cached:
+        all_pts = cached["points"]
+        if min_val is not None:
+            filtered = [pt for pt in all_pts if pt[2] >= min_val][:limit]
+        else:
+            filtered = all_pts[:limit]
+
+        return {
+            "status": "SUCCESS",
+            "source": "cache",
+            "product_id": product_id,
+            "category": cached.get("category"),
+            "summary": cached["summary"],
+            "unit": cached.get("unit", meta.get("unit")),
+            "total_points": len(filtered),
+            "points": filtered,
+        }
+
+    # 2. Check Database
+    if is_database_reachable():
+        try:
+            conn = await connect_asyncpg_with_retry(max_retries=2, timeout=10.0)
+            if product_id == "3SIMG_L2B_HEM":
+                # HEM uses precipitation_observations: query latest observation slice for sub-10ms response
+                latest_t = await conn.fetchval(
+                    "SELECT MAX(observation_time) FROM precipitation_observations WHERE source = 'MOSDAC';"
+                )
+                if latest_t:
+                    rows = await conn.fetch(
+                        """
+                        SELECT latitude, longitude, precipitation as value
+                        FROM precipitation_observations
+                        WHERE source = 'MOSDAC' AND observation_time = $1 AND precipitation >= COALESCE($2, 0.1)
+                        LIMIT $3;
+                        """,
+                        latest_t,
+                        min_val,
+                        limit,
+                    )
+                else:
+                    rows = []
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT latitude, longitude, value
+                    FROM mosdac_observations
+                    WHERE product_id = $1 AND ($2::float IS NULL OR value >= $2)
+                    ORDER BY observation_time DESC
+                    LIMIT $3;
+                    """,
+                    product_id,
+                    min_val,
+                    limit,
+                )
+            await conn.close()
+
+            if rows:
+                points = [
+                    [round(float(r["latitude"]), 3), round(float(r["longitude"]), 3), round(float(r["value"]), 3)]
+                    for r in rows
+                ]
+                return {
+                    "status": "SUCCESS",
+                    "source": "database",
+                    "product_id": product_id,
+                    "category": meta.get("category").value if meta.get("category") else "weather",
+                    "unit": meta.get("unit"),
+                    "total_points": len(points),
+                    "points": points,
+                }
+        except Exception as e:
+            logger.error(f"[MOSDAC API] DB query for {product_id} points failed: {e}")
+
+    return {
+        "status": "NO_DATA",
+        "product_id": product_id,
+        "message": f"No coordinate points available for {product_id}. Trigger ingestion to load.",
+        "points": [],
+    }
+
+
+@router.get("/products/{product_id}/health")
+async def get_product_health(product_id: str) -> Dict[str, Any]:
+    """Health check for an individual MOSDAC product."""
+    meta = get_product_definition(product_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Product '{product_id}' not found")
+
+    is_enabled = mosdac_pipeline.is_product_enabled(product_id)
+    cached = mosdac_pipeline.get_latest_observation(product_id)
+
+    return {
+        "product_id": product_id,
+        "name": meta["name"],
+        "category": meta["category"].value,
+        "operational_status": meta["operational_status"].value,
+        "is_enabled": is_enabled,
+        "has_cached_observation": cached is not None,
+        "test_map_path": meta["test_map_path"],
+    }
+
+
+@router.post("/products/{product_id}/trigger")
+async def trigger_product_ingestion(
+    product_id: str,
+    background_tasks: BackgroundTasks,
+    sync: bool = Query(False, description="Run synchronously and wait for completion"),
+) -> Dict[str, Any]:
+    """Trigger discovery, download, and ingestion for a specific MOSDAC product."""
+    meta = get_product_definition(product_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Product '{product_id}' not found in registry")
+
+    if not mosdac_pipeline.is_product_enabled(product_id):
+        raise HTTPException(status_code=400, detail=f"Product '{product_id}' is disabled by configuration toggles")
+
+    if sync:
+        result = await mosdac_pipeline.ingest_latest_for_product(product_id=product_id)
+        return {"status": "TRIGGERED_SYNC", "execution": result}
+    else:
+        background_tasks.add_task(mosdac_pipeline.ingest_latest_for_product, product_id)
+        return {
+            "status": "ACCEPTED",
+            "product_id": product_id,
+            "message": f"Ingestion job for {product_id} launched in background.",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+@router.post("/products/{product_id}/test-broadcast")
+async def trigger_product_test_broadcast(
+    product_id: str,
+    granule_id: Optional[str] = Query(None, description="Optional specific granule ID to broadcast"),
+) -> Dict[str, Any]:
+    """Trigger a WebSocket broadcast for a specific product to test live sync on test maps."""
+    result = await mosdac_pipeline.broadcast_real_observation(
+        product_id=product_id,
+        granule_id=granule_id,
+        is_test_event=True,
+    )
+    return result
+

@@ -37,6 +37,42 @@ class Settings(BaseSettings):
     NASA_INGESTION_ENABLED: bool = False
     MOSDAC_INGESTION_ENABLED: bool = True
 
+    # MOSDAC Modular Multi-Data Ingestion Platform Toggles
+    MOSDAC_PIPELINE_ENABLED: bool = True
+    MOSDAC_WEATHER_ENABLED: bool = True
+    MOSDAC_ENVIRONMENT_ENABLED: bool = True
+    MOSDAC_OCEAN_ENABLED: bool = True
+
+    # Weather Products
+    MOSDAC_RAINFALL_ENABLED: bool = True
+    MOSDAC_RAINFALL_IMR_ENABLED: bool = False
+    MOSDAC_CLOUD_ENABLED: bool = True
+    MOSDAC_HUMIDITY_ENABLED: bool = True
+    MOSDAC_OLR_ENABLED: bool = True
+    MOSDAC_FOG_ENABLED: bool = True
+    MOSDAC_CLOUD_MOTION_ENABLED: bool = False
+    MOSDAC_WATER_VAPOUR_ENABLED: bool = False
+    MOSDAC_TEMPERATURE_PROFILE_ENABLED: bool = False
+    MOSDAC_PRECIPITABLE_WATER_ENABLED: bool = False
+    MOSDAC_STABILITY_ENABLED: bool = False
+    MOSDAC_OZONE_ENABLED: bool = False
+
+    # Environment Products
+    MOSDAC_SNOW_ENABLED: bool = True
+    MOSDAC_AEROSOL_ENABLED: bool = True
+    MOSDAC_FIRE_ENABLED: bool = False
+    MOSDAC_SMOKE_ENABLED: bool = False
+
+    # Ocean Products
+    MOSDAC_SST_ENABLED: bool = True
+    MOSDAC_SCATSAT_WIND_ENABLED: bool = False
+    MOSDAC_CHLOROPHYLL_ENABLED: bool = False
+
+    # Retention Durations (Days)
+    MOSDAC_RETENTION_DAYS_WEATHER: int = 30
+    MOSDAC_RETENTION_DAYS_ENVIRONMENT: int = 90
+    MOSDAC_RETENTION_DAYS_OCEAN: int = 60
+
     # Kafka Configuration
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
     KAFKA_ENABLED: bool = True
@@ -117,6 +153,9 @@ class Settings(BaseSettings):
         self.DATA_DLQ_DIR.mkdir(parents=True, exist_ok=True)
         self.DATA_MOSDAC_RAW_DIR.mkdir(parents=True, exist_ok=True)
         self.DATA_MOSDAC_TRANSFORMED_DIR.mkdir(parents=True, exist_ok=True)
+        for domain in ("weather", "environment", "ocean"):
+            (self.DATA_MOSDAC_RAW_DIR / domain).mkdir(parents=True, exist_ok=True)
+            (self.DATA_MOSDAC_TRANSFORMED_DIR / domain).mkdir(parents=True, exist_ok=True)
 
     def resolve_raw_path(self, raw_path: Optional[Any] = None, file_name: Optional[str] = None) -> Path:
         """Dynamically resolve raw ZIP archive path to current DATA_RAW_DIR.

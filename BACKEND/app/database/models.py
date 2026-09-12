@@ -163,3 +163,76 @@ class BoundaryDistrict(Base):
     max_lon = Column(Float, nullable=True)
     center_lat = Column(Float, nullable=True)
     center_lon = Column(Float, nullable=True)
+
+
+class MosdacProductLedger(Base):
+    """Tracks every MOSDAC satellite product granule lifecycle across domains."""
+    __tablename__ = "mosdac_product_ledger"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    product_id = Column(String(64), nullable=False, index=True)
+    category = Column(String(32), nullable=False, index=True)
+    granule_id = Column(String(255), unique=True, nullable=False, index=True)
+    file_name = Column(String(255), nullable=False)
+    source_url = Column(String(1024), nullable=True)
+    observation_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    file_size_bytes = Column(BigInteger, nullable=True)
+    status = Column(String(32), nullable=False, default="DISCOVERED", index=True)
+    row_count = Column(BigInteger, default=0)
+    min_value = Column(Float, nullable=True)
+    max_value = Column(Float, nullable=True)
+    mean_value = Column(Float, nullable=True)
+    unit = Column(String(32), nullable=True)
+    summary_json = Column(Text, nullable=True)
+    raw_file_path = Column(String(1024), nullable=True)
+    transformed_file_path = Column(String(1024), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_mosdac_ledger_prod_time", "product_id", "observation_time"),
+    )
+
+
+class MosdacObservationStaging(Base):
+    """Unindexed staging table for high-speed COPY ingestion of MOSDAC multi-product observations."""
+    __tablename__ = "mosdac_observations_staging"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    granule_id = Column(String(128), nullable=False)
+    product_id = Column(String(64), nullable=False)
+    category = Column(String(32), nullable=False)
+    observation_time = Column(DateTime(timezone=True), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    value = Column(Float, nullable=True)
+    secondary_value = Column(Float, nullable=True)
+    unit = Column(String(32), nullable=True)
+    state = Column(String(128), nullable=True)
+    district = Column(String(128), nullable=True)
+
+
+class MosdacObservation(Base):
+    """Partitioned table for domain-wide standardized MOSDAC observations."""
+    __tablename__ = "mosdac_observations"
+
+    observation_time = Column(DateTime(timezone=True), primary_key=True, nullable=False, index=True)
+    product_id = Column(String(64), primary_key=True, nullable=False, index=True)
+    granule_id = Column(String(128), primary_key=True, nullable=False)
+    latitude = Column(Float, primary_key=True, nullable=False)
+    longitude = Column(Float, primary_key=True, nullable=False)
+    value = Column(Float, nullable=True)
+    secondary_value = Column(Float, nullable=True)
+    unit = Column(String(32), nullable=True)
+    category = Column(String(32), nullable=False, index=True)
+    state = Column(String(128), nullable=True, index=True)
+    district = Column(String(128), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("observation_time", "product_id", "granule_id", "latitude", "longitude"),
+        Index("idx_mosdac_obs_time_prod", "product_id", "observation_time"),
+        Index("idx_mosdac_obs_coords", "latitude", "longitude"),
+    )
+

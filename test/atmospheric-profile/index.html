@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ISRO INSAT-3DS Sounder Atmospheric Profile (ATD) &bull; Technical Status</title>
+  <link rel="stylesheet" href="../common/map-styles.css">
+  <style>
+    .status-container {
+      max-width: 900px;
+      margin: 60px auto;
+      padding: 30px;
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+      border: 1px solid #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .status-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 2px solid #f1f5f9;
+      padding-bottom: 20px;
+      margin-bottom: 24px;
+    }
+    .status-badge-unavail {
+      background: #fef2f2;
+      color: #dc2626;
+      border: 1px solid #fecaca;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 13px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .spec-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      font-size: 14px;
+    }
+    .spec-table th, .spec-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid #f1f5f9;
+      text-align: left;
+    }
+    .spec-table th {
+      background: #f8fafc;
+      color: #475569;
+      font-weight: 600;
+      width: 25%;
+    }
+    .code-box {
+      background: #0f172a;
+      color: #38bdf8;
+      padding: 16px;
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+    .btn-return {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #0284c7;
+      color: #ffffff;
+      text-decoration: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      transition: background 0.2s;
+    }
+    .btn-return:hover {
+      background: #0369a1;
+    }
+  </style>
+</head>
+<body style="background: #f8fafc; min-height: 100vh;">
+
+  <div class="top-nav" style="position: static; padding: 16px 32px; background: #ffffff; border-bottom: 1px solid #e2e8f0;">
+    <a href="../index.html" class="nav-link" style="color:#0284c7; font-weight:600;">← Back to Test Center Hub</a>
+  </div>
+
+  <div class="status-container">
+    <div class="status-header">
+      <div>
+        <h1 style="margin: 0 0 6px 0; font-size: 22px; color: #0f172a;">
+          🌡️ INSAT-3DS Sounder Atmospheric Profile (ATD)
+        </h1>
+        <div style="color: #64748b; font-size: 14px;">
+          Product ID: <b>3SSND_L2B_ATD</b> &bull; Category: <b>Weather</b> &bull; Sensor: <b>SOUNDER (19-channel)</b>
+        </div>
+      </div>
+      <div class="status-badge-unavail">
+        ● CATALOG FEED UNAVAILABLE
+      </div>
+    </div>
+
+    <div style="background: #fffbeb; border-left: 4px solid #f59e0b; padding: 14px 18px; border-radius: 4px; margin-bottom: 24px;">
+      <b style="color: #b45309;">Upstream MOSDAC Catalog Status:</b>
+      <p style="margin: 4px 0 0 0; color: #92400e; font-size: 14px; line-height: 1.5;">
+        INSAT-3DS carries a sophisticated 19-channel infrared atmospheric sounder providing vertical profiles of atmospheric temperature (K) and moisture (%) across 40 pressure levels (1000 to 10 hPa). The operational Level-2B stream is currently pending public dissemination in the MOSDAC OpenSearch catalog.
+      </p>
+    </div>
+
+    <h3 style="font-size: 16px; color: #1e293b; margin-bottom: 10px;">Product Specifications & Readiness</h3>
+    <table class="spec-table">
+      <tr>
+        <th>Satellite & Sensor</th>
+        <td>INSAT-3DS &bull; 19-Channel Infrared Sounder</td>
+      </tr>
+      <tr>
+        <th>Observation Target</th>
+        <td>Vertical thermodynamic profiles (T & RH) from surface to stratosphere</td>
+      </tr>
+      <tr>
+        <th>Physical Units</th>
+        <td>Kelvin (K) for Temperature &bull; Percent (%) for Relative Humidity</td>
+      </tr>
+      <tr>
+        <th>Target Kafka Topic</th>
+        <td><code>mosdac.weather</code> (Domain Topic 2/5)</td>
+      </tr>
+      <tr>
+        <th>Platform Adapter</th>
+        <td><code>WeatherMosdacAdapter</code> (Configured with multi-level pressure slice indexing)</td>
+      </tr>
+      <tr>
+        <th>Environment Toggle</th>
+        <td><code>MOSDAC_TEMPERATURE_PROFILE_ENABLED=false</code></td>
+      </tr>
+    </table>
+
+    <h3 style="font-size: 16px; color: #1e293b; margin-top: 24px; margin-bottom: 8px;">Upstream Probe Diagnostics</h3>
+    <div class="code-box">
+GET https://mosdac.gov.in/opensearch/search/3SSND_L2B_ATD?datasetId=3SSND_L2B_ATD&time=recent HTTP/1.1
+Host: mosdac.gov.in
+Status: 500 Internal Server Error
+Response: {"error": "Dataset not found in active catalog index"}
+
+System Handling:
+- Product marked as ProductStatus.UNAVAILABLE.
+- Zero fake vertical soundings injected.
+- Ingestion pipeline will auto-detect availability via scheduled catalog polling.
+    </div>
+
+    <div style="margin-top: 30px; display: flex; justify-content: space-between; align-items: center;">
+      <a href="../index.html" class="btn-return">← Back to Overview</a>
+      <span style="font-size: 13px; color: #94a3b8;">TATVA MOSDAC Multi-Product Ingestion Platform</span>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -14,6 +14,12 @@ from app.ingestion.topics import (
     TOPIC_GRANULES_TRANSFORMED,
     TOPIC_GRANULES_DLQ,
     TOPIC_WEATHER_OBSERVATION,
+    TOPIC_MOSDAC_RAW,
+    TOPIC_MOSDAC_WEATHER,
+    TOPIC_MOSDAC_ENVIRONMENT,
+    TOPIC_MOSDAC_OCEAN,
+    TOPIC_MOSDAC_DLQ,
+    MOSDAC_TOPICS,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,6 +122,10 @@ class KafkaBus:
                     TOPIC_GRANULES_RAW,
                     TOPIC_GRANULES_STATUS,
                     TOPIC_GRANULES_TRANSFORMED,
+                    TOPIC_MOSDAC_RAW,
+                    TOPIC_MOSDAC_WEATHER,
+                    TOPIC_MOSDAC_ENVIRONMENT,
+                    TOPIC_MOSDAC_OCEAN,
                 ]
                 self.consumer = AIOKafkaConsumer(
                     *consumer_topics,

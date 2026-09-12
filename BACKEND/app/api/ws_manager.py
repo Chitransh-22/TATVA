@@ -27,6 +27,8 @@ class ClientSubscription:
         self.client_id: str = client_id
         self.websocket: WebSocket = websocket
         self.source: str = getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")
+        self.product: Optional[str] = None
+        self.category: Optional[str] = None
         self.state: Optional[str] = None
         self.district: Optional[str] = None
         self.parameter: str = "precipitation"
@@ -42,11 +44,27 @@ class ClientSubscription:
         target_state: Optional[str],
         target_district: Optional[str],
         target_source: Optional[str] = None,
+        target_product: Optional[str] = None,
+        target_category: Optional[str] = None,
     ) -> bool:
         """Determine if an incremental update is relevant to this subscriber."""
         # Source filtering: If client is subscribed to MOSDAC, ignore NASA events (and vice versa)
         if target_source and self.source:
             if target_source.strip().upper() != self.source.strip().upper():
+                return False
+
+        # Product filtering: If client specified a specific product, match strictly
+        if self.product and self.product != "*":
+            if target_product and self.product.upper() != target_product.upper():
+                return False
+        elif not self.product:
+            # Default backward-compatibility: unconfigured clients receive default rainfall products
+            if target_product and target_product.upper() not in ("3SIMG_L2B_HEM", "3SIMG_L2G_IMR", "IMERG"):
+                return False
+
+        # Category filtering: If client specified category, match
+        if self.category and self.category != "*":
+            if target_category and self.category.lower() != target_category.lower():
                 return False
 
         # 1. District level subscriber: only wants updates for this district
@@ -159,6 +177,8 @@ class WeatherWebSocketManager:
         parameter: str = "precipitation",
         bounds: Optional[Dict[str, float]] = None,
         zoom: Optional[int] = None,
+        product: Optional[str] = None,
+        category: Optional[str] = None,
     ):
         """Update subscription filters for an existing client without reconnecting."""
         async with self._lock:
@@ -170,18 +190,27 @@ class WeatherWebSocketManager:
             sub.district = district.strip() if district else None
             if source:
                 sub.source = source.strip().upper()
+            if product:
+                sub.product = product.strip()
+            if category:
+                sub.category = category.strip()
             sub.parameter = parameter
             sub.bounds = bounds
             sub.zoom = zoom
             sub.last_timestamp = datetime.now(timezone.utc)
 
-        logger.info(f"Client {client_id} subscription updated: source={sub.source}, state={sub.state}, district={sub.district}")
+        logger.info(
+            f"Client {client_id} subscription updated: source={sub.source}, product={sub.product}, "
+            f"category={sub.category}, state={sub.state}, district={sub.district}"
+        )
 
         # Send subscription confirmation
         ack_msg = {
             "type": "subscribed",
             "subscription": {
                 "source": sub.source,
+                "product": sub.product,
+                "category": sub.category,
                 "state": sub.state,
                 "district": sub.district,
                 "parameter": sub.parameter,
@@ -228,9 +257,11 @@ class WeatherWebSocketManager:
         granule_id: Optional[str] = None,
         source: Optional[str] = None,
         product: Optional[str] = None,
+        category: Optional[str] = None,
         point_count: Optional[int] = None,
         active_rain_count: Optional[int] = None,
         max_rainfall: Optional[float] = None,
+        unit: Optional[str] = None,
     ):
         """Broadcast a batch of incremental weather updates strictly to matching subscribers."""
         if not self._clients or not updates:
@@ -245,6 +276,7 @@ class WeatherWebSocketManager:
 
         active_source = (source or getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")).upper()
         prod = product or ("3SIMG_L2B_HEM" if active_source == "MOSDAC" else "IMERG")
+        cat = category or ("weather" if "3SIMG" in prod or "IMERG" in prod else None)
         p_count = point_count if point_count is not None else (summary.get("total_points", len(updates)) if summary else len(updates))
         active_count = active_rain_count if active_rain_count is not None else (summary.get("active_rain_points", len(updates)) if summary else len(updates))
         max_r = max_rainfall if max_rainfall is not None else (summary.get("max_precipitation", 0.0) if summary else 0.0)
@@ -254,6 +286,8 @@ class WeatherWebSocketManager:
             "action": "upsert",
             "source": active_source,
             "product": prod,
+            "category": cat,
+            "unit": unit or (summary.get("unit") if summary else ""),
             "version": self._version_counter,
             "granule_id": granule_id or f"REALTIME-{active_source}",
             "observation_time": ts.isoformat(),
@@ -276,7 +310,7 @@ class WeatherWebSocketManager:
         async with self._lock:
             targets = [
                 sub for sub in self._clients.values()
-                if sub.matches(target_state, target_district, active_source)
+                if sub.matches(target_state, target_district, active_source, prod, cat)
             ]
 
         for sub in targets:
