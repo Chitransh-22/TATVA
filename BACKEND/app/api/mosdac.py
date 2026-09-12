@@ -514,6 +514,7 @@ async def get_product_points(
     if is_database_reachable():
         try:
             conn = await connect_asyncpg_with_retry(max_retries=2, timeout=10.0)
+            summary_data = {}
             if product_id == "3SIMG_L2B_HEM":
                 # HEM uses precipitation_observations: query latest observation slice for sub-10ms response
                 latest_t = await conn.fetchval(
@@ -534,18 +535,70 @@ async def get_product_points(
                 else:
                     rows = []
             else:
-                rows = await conn.fetch(
+                # Fast 2-step lookup: First find latest observation_time to allow partition pruning
+                ledger_row = await conn.fetchrow(
                     """
-                    SELECT latitude, longitude, value
-                    FROM mosdac_observations
-                    WHERE product_id = $1 AND ($2::float IS NULL OR value >= $2)
+                    SELECT observation_time, summary_json, min_value, max_value, mean_value, row_count, granule_id
+                    FROM mosdac_product_ledger
+                    WHERE product_id = $1
                     ORDER BY observation_time DESC
-                    LIMIT $3;
+                    LIMIT 1;
                     """,
                     product_id,
-                    min_val,
-                    limit,
                 )
+
+                latest_t = None
+                if ledger_row:
+                    latest_t = ledger_row["observation_time"]
+                    summary_data = {
+                        "granule_id": ledger_row["granule_id"],
+                        "observation_time_utc": latest_t.isoformat() if latest_t else None,
+                        "min_value": ledger_row["min_value"],
+                        "max_value": ledger_row["max_value"],
+                        "mean_value": ledger_row["mean_value"],
+                        "total_points": ledger_row["row_count"],
+                    }
+                else:
+                    latest_t = await conn.fetchval(
+                        "SELECT observation_time FROM mosdac_observations WHERE product_id = $1 ORDER BY observation_time DESC LIMIT 1;",
+                        product_id,
+                    )
+
+                if latest_t:
+                    effective_min = min_val
+                    if effective_min is None:
+                        if product_id == "3SIMG_L2C_FOG":
+                            effective_min = 0.5
+                        elif product_id == "3SIMG_L2C_SNW":
+                            effective_min = 1.0
+
+                    if effective_min is not None:
+                        rows = await conn.fetch(
+                            """
+                            SELECT latitude, longitude, value
+                            FROM mosdac_observations
+                            WHERE product_id = $1 AND observation_time = $2 AND value >= $3
+                            LIMIT $4;
+                            """,
+                            product_id,
+                            latest_t,
+                            effective_min,
+                            limit,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            """
+                            SELECT latitude, longitude, value
+                            FROM mosdac_observations
+                            WHERE product_id = $1 AND observation_time = $2
+                            LIMIT $3;
+                            """,
+                            product_id,
+                            latest_t,
+                            limit,
+                        )
+                else:
+                    rows = []
             await conn.close()
 
             if rows:
@@ -557,13 +610,45 @@ async def get_product_points(
                     "status": "SUCCESS",
                     "source": "database",
                     "product_id": product_id,
-                    "category": meta.get("category").value if meta.get("category") else "weather",
+                    "category": meta.get("category").value if hasattr(meta.get("category"), "value") else str(meta.get("category")),
                     "unit": meta.get("unit"),
+                    "summary": summary_data,
                     "total_points": len(points),
                     "points": points,
                 }
         except Exception as e:
             logger.error(f"[MOSDAC API] DB query for {product_id} points failed: {e}")
+
+    # 3. Check local raw HDF5 files and parse on the fly if needed
+    raw_dir = settings.DATA_MOSDAC_RAW_DIR
+    code = product_id.split("_")[-1]
+    matching_files = list(raw_dir.glob(f"*{code}*.h5"))
+    if matching_files:
+        try:
+            target_file = sorted(matching_files, key=lambda f: f.stat().st_mtime, reverse=True)[0]
+            logger.info(f"[MOSDAC API] Parsing {product_id} on the fly from {target_file.name}...")
+            await mosdac_pipeline.ingest_granule_file(
+                file_path=target_file,
+                product_id=product_id,
+                persist_db=False,
+                broadcast_ws=False,
+            )
+            cached = mosdac_pipeline.get_latest_observation(product_id)
+            if cached:
+                all_pts = cached["points"]
+                filtered = [pt for pt in all_pts if pt[2] >= min_val][:limit] if min_val is not None else all_pts[:limit]
+                return {
+                    "status": "SUCCESS",
+                    "source": "cache_parsed_on_the_fly",
+                    "product_id": product_id,
+                    "category": cached.get("category"),
+                    "summary": cached["summary"],
+                    "unit": cached.get("unit", meta.get("unit")),
+                    "total_points": len(filtered),
+                    "points": filtered,
+                }
+        except Exception as parse_err:
+            logger.error(f"[MOSDAC API] On-the-fly parsing failed for {product_id}: {parse_err}")
 
     return {
         "status": "NO_DATA",

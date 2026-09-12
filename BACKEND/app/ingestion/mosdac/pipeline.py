@@ -99,13 +99,15 @@ class MosdacPipeline:
         product_id: Optional[str] = None,
         persist_db: bool = True,
         clip_to_india: Optional[bool] = None,
+        broadcast_ws: bool = True,
     ) -> Dict[str, Any]:
         """Ingest a specific local MOSDAC HDF5 file through validation, parsing, database persistence, and Kafka publishing."""
         pipeline_start = time.time()
         granule_id = file_path.stem
         target_product = product_id or self.infer_product_id(file_path)
         meta = get_product_definition(target_product) or {}
-        category = str(meta.get("category", "weather"))
+        cat = meta.get("category", "weather")
+        category = cat.value if hasattr(cat, "value") else str(cat).lower().replace("productcategory.", "")
 
         logger.info(f"[MOSDAC Pipeline] Starting ingestion for {target_product} ({file_path.name})...")
 
@@ -206,6 +208,12 @@ class MosdacPipeline:
         if target_product in ("3SIMG_L2B_HEM", "3SIMG_L2G_IMR"):
             active_mask = vals > 0.0
             sel_lats, sel_lons, sel_vals = lats[active_mask], lons[active_mask], vals[active_mask]
+        elif target_product == "3SIMG_L2C_SNW":
+            active_mask = vals >= 1.0
+            sel_lats, sel_lons, sel_vals = lats[active_mask], lons[active_mask], vals[active_mask]
+        elif target_product == "3SIMG_L2C_FOG":
+            active_mask = vals >= 0.5
+            sel_lats, sel_lons, sel_vals = lats[active_mask], lons[active_mask], vals[active_mask]
         else:
             sel_lats, sel_lons, sel_vals = lats, lons, vals
 
@@ -247,18 +255,19 @@ class MosdacPipeline:
         logger.info(f"[MOSDAC Pipeline] Published {target_product} to Kafka topic '{domain_topic}' with key '{msg_key}'.")
 
         # 8. WebSocket Live Broadcast (Strictly after database commit & Kafka publish)
-        try:
-            await self._broadcast_product_websocket(
-                product_id=target_product,
-                category=category,
-                granule_id=granule_id,
-                obs_time=obs_time,
-                summary=summary,
-                points_compact=points_compact,
-                is_test_event=False,
-            )
-        except Exception as ws_err:
-            logger.error(f"[MOSDAC Pipeline] WebSocket broadcast error: {ws_err}", exc_info=True)
+        if broadcast_ws:
+            try:
+                await self._broadcast_product_websocket(
+                    product_id=target_product,
+                    category=category,
+                    granule_id=granule_id,
+                    obs_time=obs_time,
+                    summary=summary,
+                    points_compact=points_compact,
+                    is_test_event=False,
+                )
+            except Exception as ws_err:
+                logger.error(f"[MOSDAC Pipeline] WebSocket broadcast error: {ws_err}", exc_info=True)
 
         logger.info(
             f"[MOSDAC Pipeline] Completed ingestion for {target_product} ({granule_id}) in {total_latency:.2f}s: "
@@ -375,7 +384,8 @@ class MosdacPipeline:
             target_granule_id = summary.get("granule_id", granule_id or product_id)
             obs_time = datetime.fromisoformat(summary["observation_time_utc"])
             meta = get_product_definition(product_id) or {}
-            category = str(meta.get("category", "weather"))
+            cat = meta.get("category", "weather")
+            category = cat.value if hasattr(cat, "value") else str(cat).lower().replace("productcategory.", "")
 
             await self._broadcast_product_websocket(
                 product_id=product_id,
@@ -399,7 +409,7 @@ class MosdacPipeline:
         raw_dir = settings.DATA_MOSDAC_RAW_DIR
         matching_files = list(raw_dir.glob(f"*{product_id.split('_')[-1]}*.h5"))
         if matching_files:
-            target_file = matching_files[0]
+            target_file = sorted(matching_files, key=lambda f: f.stat().st_mtime, reverse=True)[0]
             result = await self.ingest_granule_file(
                 file_path=target_file,
                 product_id=product_id,
@@ -414,6 +424,34 @@ class MosdacPipeline:
             }
 
         return {"status": "NO_DATA", "message": f"No observation data found for product {product_id}"}
+
+    async def warm_cache_for_all_available(self) -> Dict[str, Any]:
+        """Pre-populate in-memory observation cache for all products with available local raw files."""
+        raw_dir = settings.DATA_MOSDAC_RAW_DIR
+        warmed = []
+        for prod_id, meta in MOSDAC_PRODUCTS.items():
+            if prod_id in self._latest_observations:
+                warmed.append(prod_id)
+                continue
+
+            code = prod_id.split("_")[-1]
+            matching = list(raw_dir.glob(f"*{code}*.h5"))
+            if matching:
+                latest_file = sorted(matching, key=lambda f: f.stat().st_mtime, reverse=True)[0]
+                try:
+                    logger.info(f"[MOSDAC Pipeline] Warming cache for {prod_id} from {latest_file.name}...")
+                    await self.ingest_granule_file(
+                        file_path=latest_file,
+                        product_id=prod_id,
+                        persist_db=False,
+                        broadcast_ws=False,
+                    )
+                    warmed.append(prod_id)
+                except Exception as e:
+                    logger.warning(f"[MOSDAC Pipeline] Cache warming failed for {prod_id}: {e}")
+
+        logger.info(f"[MOSDAC Pipeline] Cache warmed for {len(warmed)} products: {warmed}")
+        return {"status": "SUCCESS", "warmed_products": warmed}
 
     async def ingest_latest_for_product(
         self,

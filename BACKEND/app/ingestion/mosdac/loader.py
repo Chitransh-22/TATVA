@@ -140,29 +140,45 @@ class MosdacLoader:
                 "product",
             ]
 
-            if csv_path and csv_path.exists():
-                with open(csv_path, "rb") as f:
-                    await conn.copy_to_table(
-                        "precipitation_observations_staging",
-                        source=f,
-                        format="csv",
-                        header=True,
-                        columns=staging_columns,
-                    )
-            elif df is not None and len(df) > 0:
-                # Use in-memory buffer
-                csv_buffer = io.BytesIO()
-                df.to_csv(csv_buffer, index=False)
-                csv_buffer.seek(0)
-                await conn.copy_to_table(
-                    "precipitation_observations_staging",
-                    source=csv_buffer,
-                    format="csv",
-                    header=True,
-                    columns=staging_columns,
-                )
+            # Prepare standardized DataFrame matching precipitation_observations_staging schema
+            if df is not None and len(df) > 0:
+                prep_df = df.copy()
+            elif csv_path and csv_path.exists():
+                prep_df = pd.read_csv(csv_path)
             else:
                 raise ValueError("Neither valid csv_path nor non-empty df provided for loading")
+
+            if "precipitation" not in prep_df.columns and "value" in prep_df.columns:
+                prep_df["precipitation"] = prep_df["value"]
+            if "granule_id" not in prep_df.columns:
+                prep_df["granule_id"] = granule_id
+            if "observation_time" not in prep_df.columns:
+                prep_df["observation_time"] = observation_time
+            if "ice" not in prep_df.columns:
+                prep_df["ice"] = 0.0
+            if "liquid" not in prep_df.columns:
+                prep_df["liquid"] = 0.0
+            if "liquid_percent" not in prep_df.columns:
+                prep_df["liquid_percent"] = 0.0
+            if "num_precip_half_hour" not in prep_df.columns:
+                prep_df["num_precip_half_hour"] = 1
+            if "num_valid_half_hour" not in prep_df.columns:
+                prep_df["num_valid_half_hour"] = 1
+            if "source" not in prep_df.columns:
+                prep_df["source"] = "MOSDAC"
+            if "product" not in prep_df.columns:
+                prep_df["product"] = "INSAT-3DS_IMR" if "IMR" in granule_id else "INSAT-3DS_HEM"
+
+            csv_buffer = io.BytesIO()
+            prep_df[staging_columns].to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)
+            await conn.copy_to_table(
+                "precipitation_observations_staging",
+                source=csv_buffer,
+                format="csv",
+                header=True,
+                columns=staging_columns,
+            )
 
             # 4. Idempotent Upsert from staging into partitioned observations table with PostGIS geometry
             logger.info(f"[MOSDAC Loader] Upserting staging records into precipitation_observations...")
@@ -185,8 +201,8 @@ class MosdacLoader:
                 liquid_percent,
                 num_precip_half_hour,
                 num_valid_half_hour,
-                'MOSDAC',
-                'INSAT-3DS_HEM'
+                source,
+                product
             FROM precipitation_observations_staging
             WHERE granule_id = $1
             ON CONFLICT (observation_time, granule_id, latitude, longitude) DO UPDATE
@@ -204,9 +220,7 @@ class MosdacLoader:
             )
 
             # Count rows inserted
-            inserted_count = len(df) if df is not None else 0
-            if inserted_count == 0 and csv_path and csv_path.exists():
-                inserted_count = sum(1 for _ in open(csv_path, "r")) - 1
+            inserted_count = len(prep_df)
 
             duration = time.time() - start_time
             logger.info(

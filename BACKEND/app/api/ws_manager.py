@@ -64,8 +64,11 @@ class ClientSubscription:
 
         # Category filtering: If client specified category, match
         if self.category and self.category != "*":
-            if target_category and self.category.lower() != target_category.lower():
-                return False
+            if target_category:
+                sub_cat = self.category.lower().replace("productcategory.", "").strip()
+                tgt_cat = target_category.lower().replace("productcategory.", "").strip()
+                if sub_cat != tgt_cat:
+                    return False
 
         # 1. District level subscriber: only wants updates for this district
         if self.district:

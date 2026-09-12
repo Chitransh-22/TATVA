@@ -45,7 +45,7 @@ class Settings(BaseSettings):
 
     # Weather Products
     MOSDAC_RAINFALL_ENABLED: bool = True
-    MOSDAC_RAINFALL_IMR_ENABLED: bool = False
+    MOSDAC_RAINFALL_IMR_ENABLED: bool = True
     MOSDAC_CLOUD_ENABLED: bool = True
     MOSDAC_HUMIDITY_ENABLED: bool = True
     MOSDAC_OLR_ENABLED: bool = True

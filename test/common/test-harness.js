@@ -15,6 +15,8 @@ class MosdacTestMap {
     this.defaultMinThreshold = config.defaultMinThreshold !== undefined ? config.defaultMinThreshold : -999.0;
     this.boundaryPath = config.boundaryPath || '../india_boundary.geojson';
     this.localDataVar = config.localDataVar || null;
+    this.center = config.center || [22.8, 82.5];
+    this.zoom = config.zoom || 5;
 
     this.allPoints = [];
     this.layerOpacity = 0.85;
@@ -24,6 +26,10 @@ class MosdacTestMap {
     this.canvasLayer = null;
     this.ws = null;
     this.heartbeatTimer = null;
+    this.dataSource = null;
+
+    // Attach instance to window for test accessibility
+    window.testMap = this;
 
     this.initMap();
     this.loadBoundary();
@@ -34,8 +40,8 @@ class MosdacTestMap {
 
   initMap() {
     this.map = L.map('map', {
-      center: [22.8, 82.5],
-      zoom: 5,
+      center: this.center,
+      zoom: this.zoom,
       minZoom: 4,
       maxZoom: 12,
       zoomControl: true,
@@ -158,23 +164,26 @@ class MosdacTestMap {
   }
 
   async loadInitialData() {
-    // 1. Try Live Backend API
-    const liveApiUrl = `http://127.0.0.1:8000/api/weather/mosdac/products/${this.productId}/points?limit=60000`;
+    // 1. Try Live Backend API with generous 8000ms timeout for cloud DB queries
+    const minParam = (this.defaultMinThreshold > -900) ? `&min_val=${this.defaultMinThreshold}` : '';
+    const liveApiUrl = `http://127.0.0.1:8000/api/weather/mosdac/products/${this.productId}/points?limit=60000${minParam}`;
     try {
-      const res = await fetch(liveApiUrl, { signal: AbortSignal.timeout(2000) });
+      const res = await fetch(liveApiUrl, { signal: AbortSignal.timeout(8000) });
       if (res.ok) {
         const data = await res.json();
         if (data.points && data.points.length > 0) {
+          console.log(`[DATA] Loaded ${data.points.length} points from LIVE BACKEND API for ${this.productId}`);
           this.handleDataLoaded(data, 'LIVE BACKEND API');
           return;
         }
       }
     } catch (e) {
-      // Backend offline
+      console.warn(`[DATA] Live API fetch failed or timed out for ${this.productId}:`, e);
     }
 
     // 2. Check bundled window data object if provided
     if (this.localDataVar && window[this.localDataVar]) {
+      console.log(`[DATA] Using bundled local dataset for ${this.productId}`);
       this.handleDataLoaded(window[this.localDataVar], 'BUNDLED LOCAL DATASET');
       return;
     }
@@ -184,6 +193,7 @@ class MosdacTestMap {
       const snapshotRes = await fetch(`${this.productId}_latest.json`);
       if (snapshotRes.ok) {
         const data = await snapshotRes.json();
+        console.log(`[DATA] Using local snapshot for ${this.productId}`);
         this.handleDataLoaded(data, 'LOCAL SNAPSHOT');
         return;
       }
@@ -191,10 +201,13 @@ class MosdacTestMap {
       // No local snapshot
     }
 
-    this.updateStatusText(`Awaiting live WebSocket feed for ${this.productId}...`);
+    console.warn(`[DATA] No data available for ${this.productId}`);
+    this.updateStatusText(`Awaiting live satellite feed for ${this.productId}...`);
+    this.updateDataBadge('NO_DATA');
   }
 
   handleDataLoaded(data, sourceLabel) {
+    this.dataSource = sourceLabel;
     this.allPoints = data.points || [];
     const summary = data.summary || {};
 
@@ -216,7 +229,27 @@ class MosdacTestMap {
     }
 
     this.updateStatusText(`Loaded ${this.allPoints.length.toLocaleString()} points from ${sourceLabel}`);
+    this.updateDataBadge(sourceLabel);
     if (this.canvasLayer) this.canvasLayer._reset();
+  }
+
+  updateDataBadge(sourceLabel) {
+    const badge = document.getElementById('liveBadge');
+    if (!badge) return;
+    if (sourceLabel === 'LIVE BACKEND API') {
+      badge.className = 'live-badge';
+      badge.innerHTML = '<span class="pulse-dot"></span> LIVE SATELLITE FEED';
+    } else if (sourceLabel === 'LOCAL SNAPSHOT' || sourceLabel === 'BUNDLED LOCAL DATASET') {
+      badge.className = 'live-badge';
+      badge.style.borderColor = '#eab308';
+      badge.style.color = '#fde047';
+      badge.innerHTML = '<span class="pulse-dot" style="background:#eab308; box-shadow:0 0 8px #eab308;"></span> SNAPSHOT — LOCAL JSON';
+    } else if (sourceLabel === 'NO_DATA') {
+      badge.className = 'live-badge disconnected';
+      badge.style.borderColor = '#475569';
+      badge.style.color = '#94a3b8';
+      badge.innerHTML = '<span class="pulse-dot" style="background:#64748b; box-shadow:none;"></span> NO DATA AVAILABLE';
+    }
   }
 
   initWebSocket() {
@@ -227,6 +260,10 @@ class MosdacTestMap {
       this.ws.onopen = () => {
         console.log(`[WS] Connected to live weather stream for ${this.productId}`);
         this.updateBadge(true);
+        const syncCounterEl = document.getElementById('liveSyncCounter');
+        if (syncCounterEl) {
+          syncCounterEl.innerText = `⚡ Live WebSocket: Connected (0 pts incrementally synced)`;
+        }
         // Subscribe to this specific product & category
         this.ws.send(JSON.stringify({
           action: 'subscribe',
@@ -276,7 +313,7 @@ class MosdacTestMap {
     if (updates.length === 0) return;
 
     // Filter updates for this product
-    if (msg.product && msg.product !== this.productId && this.productId !== '3SIMG_L2B_HEM') {
+    if (msg.product && msg.product !== this.productId) {
       return;
     }
 

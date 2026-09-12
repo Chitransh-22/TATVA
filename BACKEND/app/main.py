@@ -1,9 +1,11 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import asyncpg
-from app.config import settings
+from app.config import settings, BACKEND_DIR
 from app.database.migrations import run_migrations
 from app.ingestion.kafka_bus import kafka_bus
 from app.ingestion.pipeline import pipeline_service
@@ -13,6 +15,7 @@ from app.api.ws_manager import weather_ws_manager
 from app.api.weather import router as weather_router
 from app.api.ingestion import router as ingestion_router
 from app.api.mosdac import router as mosdac_router
+from app.ingestion.mosdac.pipeline import mosdac_pipeline
 
 # Configure logging
 logging.basicConfig(
@@ -49,6 +52,9 @@ async def lifespan(app: FastAPI):
     # 5. Start real-time WebSocket incremental broadcaster
     await weather_ws_manager.start()
 
+    # 6. Warm in-memory cache for available MOSDAC products in background
+    asyncio.create_task(mosdac_pipeline.warm_cache_for_all_available())
+
     logger.info("RITU Weather Big Data Platform is ready.")
     yield
 
@@ -80,6 +86,11 @@ app.add_middleware(
 app.include_router(weather_router, prefix="/api")
 app.include_router(ingestion_router, prefix="/api")
 app.include_router(mosdac_router, prefix="/api")
+
+# Mount standalone MOSDAC test center and test maps
+test_dir = BACKEND_DIR.parent / "test"
+if test_dir.exists():
+    app.mount("/test", StaticFiles(directory=str(test_dir), html=True), name="test")
 
 
 @app.get("/")

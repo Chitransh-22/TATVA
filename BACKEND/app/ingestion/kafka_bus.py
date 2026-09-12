@@ -122,10 +122,6 @@ class KafkaBus:
                     TOPIC_GRANULES_RAW,
                     TOPIC_GRANULES_STATUS,
                     TOPIC_GRANULES_TRANSFORMED,
-                    TOPIC_MOSDAC_RAW,
-                    TOPIC_MOSDAC_WEATHER,
-                    TOPIC_MOSDAC_ENVIRONMENT,
-                    TOPIC_MOSDAC_OCEAN,
                 ]
                 self.consumer = AIOKafkaConsumer(
                     *consumer_topics,
@@ -140,7 +136,7 @@ class KafkaBus:
                     key_deserializer=lambda k: k.decode("utf-8") if k else None,
                     **conn_kwargs,
                 )
-                await self.consumer.start()
+                await asyncio.wait_for(self.consumer.start(), timeout=8.0)
 
                 self.is_connected = True
                 self._consumer_task = asyncio.create_task(self._consume_loop())
@@ -205,13 +201,28 @@ class KafkaBus:
         if topic not in ALL_TOPICS:
             logger.warning(f"Publishing to unregistered topic: {topic}")
 
+        # Route MOSDAC domain topics to canonical Kafka topics if running on limited 5-topic cluster
+        actual_kafka_topic = topic
+        if actual_kafka_topic.startswith("mosdac."):
+            topic_mapping = {
+                "mosdac.raw": TOPIC_GRANULES_RAW,
+                "mosdac.weather": TOPIC_GRANULES_TRANSFORMED,
+                "mosdac.environment": TOPIC_GRANULES_TRANSFORMED,
+                "mosdac.ocean": TOPIC_GRANULES_TRANSFORMED,
+                "mosdac.dlq": TOPIC_GRANULES_DLQ,
+            }
+            actual_kafka_topic = topic_mapping.get(topic, topic)
+
         if self.is_connected and self.producer:
             try:
-                await self.producer.send_and_wait(topic, key=key, value=payload)
-                logger.debug(f"[Kafka] Sent event to topic '{topic}' with key '{key}'")
+                await asyncio.wait_for(
+                    self.producer.send_and_wait(actual_kafka_topic, key=key, value=payload),
+                    timeout=2.5,
+                )
+                logger.debug(f"[Kafka] Sent event to topic '{actual_kafka_topic}' (logical: '{topic}') with key '{key}'")
                 return True
             except Exception as e:
-                logger.error(f"Failed to publish to Kafka topic '{topic}': {e}. Enqueuing in memory.")
+                logger.warning(f"Failed to publish to Kafka topic '{actual_kafka_topic}' (logical: '{topic}'): {e}. Enqueuing in memory.")
 
         # Fallback to in-memory queue
         if topic not in self._memory_queues:

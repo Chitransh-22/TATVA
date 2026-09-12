@@ -537,6 +537,19 @@
           render_type: 'Fluid Raster'
         },
         {
+          product_id: '3SIMG_L2G_IMR',
+          name: 'INSAT Multispectral Rainfall (IMR)',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'mm/hr',
+          spatial_resolution: '0.04° (~4 km)',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'available',
+          test_map_path: 'rainfall-imr/index.html',
+          render_type: 'Fluid Raster'
+        },
+        {
           product_id: '3SIMG_L2B_CTP',
           name: 'Cloud Top Properties (Pressure & Temp)',
           category: 'weather',
@@ -693,10 +706,25 @@
 
       products.forEach(p => {
         const isAvail = (p.operational_status === 'available');
+        const hasLive = (p.has_live_data === true);
         const card = document.createElement('div');
         card.className = 'prod-card';
 
         const catClass = p.category === 'weather' ? 'cat-weather' : (p.category === 'ocean' ? 'cat-ocean' : 'cat-environment');
+
+        let statusBadgeHtml = '';
+        if (hasLive) {
+          statusBadgeHtml = `<span class="status-badge badge-available">● Live Available</span>`;
+        } else if (isAvail) {
+          statusBadgeHtml = `<span class="status-badge" style="background:rgba(234,179,8,0.15); color:#facc15; border:1px solid rgba(234,179,8,0.3);">○ Feed Pending</span>`;
+        } else {
+          statusBadgeHtml = `<span class="status-badge badge-unavailable">○ Unavailable</span>`;
+        }
+
+        let mapLink = p.test_map_path || '#';
+        if (mapLink.startsWith('/test/')) {
+          mapLink = mapLink.replace('/test/', '');
+        }
 
         card.innerHTML = `
           <div>
@@ -704,9 +732,7 @@
               <div class="prod-id">${p.product_id}</div>
               <div class="prod-badges">
                 <span class="category-badge ${catClass}">${p.category}</span>
-                <span class="status-badge ${isAvail ? 'badge-available' : 'badge-unavailable'}">
-                  ${isAvail ? '● Live Available' : '○ Unavailable'}
-                </span>
+                ${statusBadgeHtml}
               </div>
             </div>
 
@@ -741,14 +767,14 @@
 
           <div class="prod-actions">
             ${isAvail ? `
-              <a href="${p.test_map_path}" class="btn-launch" target="_blank">
+              <a href="${mapLink}" class="btn-launch" target="_blank">
                 🗺️ Launch Test Map
               </a>
               <button class="btn-sec" onclick="triggerBroadcast('${p.product_id}')" title="Broadcast test WebSocket event">
                 ⚡ Broadcast
               </button>
             ` : `
-              <a href="${p.test_map_path}" class="btn-launch btn-disabled">
+              <a href="${mapLink}" class="btn-launch btn-disabled">
                 ⚠️ View Status Details
               </a>
             `}

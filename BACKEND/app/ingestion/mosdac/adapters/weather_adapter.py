@@ -141,6 +141,23 @@ class WeatherMosdacAdapter(BaseMosdacAdapter):
 
     def _parse_rainfall(self, h5: h5py.File) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray], str]:
         """Extract HEM / IMR precipitation."""
+        # Check for 1D coordinates (IMR)
+        if "/latitude" in h5 or "latitude" in h5:
+            ds_name = "/IMR" if "/IMR" in h5 else "IMR"
+            ds = h5[ds_name]
+            raw_rain = ds[0, :, :] if ds.ndim == 3 else ds[:, :]
+            lat_ds = h5["/latitude"] if "/latitude" in h5 else h5["latitude"]
+            lon_ds = h5["/longitude"] if "/longitude" in h5 else h5["longitude"]
+            lat_1d = lat_ds[:]
+            lon_1d = lon_ds[:]
+            lon_2d, lat_2d = np.meshgrid(lon_1d, lat_1d)
+            fill_val = to_scalar(ds.attrs.get("_FillValue"), -999.0)
+            mask = (raw_rain >= 0.0) & (raw_rain != fill_val) & np.isfinite(raw_rain)
+            lats = lat_2d[mask].astype(np.float64)
+            lons = lon_2d[mask].astype(np.float64)
+            vals = raw_rain[mask].astype(np.float32)
+            return lats, lons, vals, None, "mm/hr"
+
         ds_name = "/HEM" if "/HEM" in h5 else "/IMR"
         ds = h5[ds_name]
         raw_rain = ds[0, :, :] if ds.ndim == 3 else ds[:, :]
