@@ -1,6 +1,7 @@
 """FastAPI Endpoints for ISRO MOSDAC INSAT-3DS Weather Observations."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -482,7 +483,7 @@ async def get_product_latest(product_id: str) -> Dict[str, Any]:
 @router.get("/products/{product_id}/points")
 async def get_product_points(
     product_id: str,
-    limit: int = Query(50000, description="Maximum number of coordinate points to return"),
+    limit: int = Query(150000, description="Maximum number of coordinate points to return"),
     min_val: Optional[float] = Query(None, description="Optional minimum value filter"),
 ) -> Dict[str, Any]:
     """Get observation points [latitude, longitude, value] for test map visualization."""
@@ -494,12 +495,14 @@ async def get_product_points(
     cached = mosdac_pipeline.get_latest_observation(product_id)
     if cached:
         all_pts = cached["points"]
-        if min_val is not None:
-            filtered = [pt for pt in all_pts if pt[2] >= min_val][:limit]
+        pts_to_sample = [pt for pt in all_pts if pt[2] >= min_val] if min_val is not None else all_pts
+        if limit and len(pts_to_sample) > limit:
+            step = len(pts_to_sample) / limit
+            filtered = [pts_to_sample[int(i * step)] for i in range(limit)]
         else:
-            filtered = all_pts[:limit]
+            filtered = pts_to_sample
 
-        return {
+        payload = {
             "status": "SUCCESS",
             "source": "cache",
             "product_id": product_id,
@@ -509,6 +512,7 @@ async def get_product_points(
             "total_points": len(filtered),
             "points": filtered,
         }
+        return payload
 
     # 2. Check Database
     if is_database_reachable():
@@ -636,8 +640,13 @@ async def get_product_points(
             cached = mosdac_pipeline.get_latest_observation(product_id)
             if cached:
                 all_pts = cached["points"]
-                filtered = [pt for pt in all_pts if pt[2] >= min_val][:limit] if min_val is not None else all_pts[:limit]
-                return {
+                pts_to_sample = [pt for pt in all_pts if pt[2] >= min_val] if min_val is not None else all_pts
+                if limit and len(pts_to_sample) > limit:
+                    step = len(pts_to_sample) / limit
+                    filtered = [pts_to_sample[int(i * step)] for i in range(limit)]
+                else:
+                    filtered = pts_to_sample
+                payload = {
                     "status": "SUCCESS",
                     "source": "cache_parsed_on_the_fly",
                     "product_id": product_id,
@@ -647,6 +656,7 @@ async def get_product_points(
                     "total_points": len(filtered),
                     "points": filtered,
                 }
+                return payload
         except Exception as parse_err:
             logger.error(f"[MOSDAC API] On-the-fly parsing failed for {product_id}: {parse_err}")
 

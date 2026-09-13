@@ -13,7 +13,7 @@ class MosdacTestMap {
     this.colorScale = config.colorScale || [];
     this.renderType = config.renderType || (this.productId.includes('FOG') ? 'categorical_mask' : 'fluid_raster');
     this.defaultMinThreshold = config.defaultMinThreshold !== undefined ? config.defaultMinThreshold : -999.0;
-    this.boundaryPath = config.boundaryPath || '../india_boundary.geojson';
+    this.boundaryPath = config.boundaryPath || '../common/india_visual_boundary.geojson';
     this.localDataVar = config.localDataVar || null;
     this.mapElementId = config.mapElementId || 'map';
     this.center = config.center || [22.8, 82.5];
@@ -41,8 +41,8 @@ class MosdacTestMap {
     window.testMap = this;
 
     this.initMap();
-    this.loadBoundary();
     this.initCanvasLayer();
+    this.loadBoundary();
     this.initWebSocket();
     this.loadInitialData();
   }
@@ -67,6 +67,13 @@ class MosdacTestMap {
       scrollWheelZoom: this.scrollWheelZoom
     });
 
+    // Create a dedicated pane for the official boundary outline above the overlay pane
+    if (!this.map.getPane('boundaryPane')) {
+      const bPane = this.map.createPane('boundaryPane');
+      bPane.style.zIndex = '450';
+      bPane.style.pointerEvents = 'none';
+    }
+
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; CARTO &copy; OpenStreetMap | &copy; ISRO MOSDAC INSAT-3DS',
       maxZoom: 19
@@ -77,24 +84,32 @@ class MosdacTestMap {
   }
 
   loadBoundary() {
-    if (window.INDIA_BOUNDARY) {
-      this.boundaryGeoJson = window.INDIA_BOUNDARY;
-      this.defaultBoundaryGeoJson = window.INDIA_BOUNDARY;
-      this.renderBoundary(window.INDIA_BOUNDARY);
+    // 1. Prefer visual boundary bundle (de facto CARTO/OSM aligned)
+    if (window.INDIA_VISUAL_BOUNDARY) {
+      this.boundaryGeoJson = window.INDIA_VISUAL_BOUNDARY;
+      this.defaultBoundaryGeoJson = window.INDIA_VISUAL_BOUNDARY;
+      this.renderBoundary(window.INDIA_VISUAL_BOUNDARY);
       if (this.canvasLayer) this.canvasLayer._draw();
       return;
     }
 
-    // Try relative paths for boundary file
+    // Try relative paths for visual boundary file
     const paths = [
       this.boundaryPath,
-      '../india_boundary.geojson',
-      '../../india_boundary.geojson',
-      'india_boundary.geojson',
-      '/test/india_boundary.geojson'
+      '../common/india_visual_boundary.geojson',
+      '../../common/india_visual_boundary.geojson',
+      '../india_visual_boundary.geojson',
+      'india_visual_boundary.geojson',
+      '/test/common/india_visual_boundary.geojson',
+      '../india_boundary.geojson'
     ];
     const tryNext = (idx) => {
       if (idx >= paths.length) {
+        if (window.INDIA_BOUNDARY) {
+          this.boundaryGeoJson = window.INDIA_BOUNDARY;
+          this.defaultBoundaryGeoJson = window.INDIA_BOUNDARY;
+          this.renderBoundary(window.INDIA_BOUNDARY);
+        }
         if (this.canvasLayer) this.canvasLayer._draw();
         return;
       }
@@ -120,6 +135,7 @@ class MosdacTestMap {
       this.boundaryLayer = null;
     }
     this.boundaryLayer = L.geoJSON(geoData, {
+      pane: 'boundaryPane',
       style: {
         color: '#1e3a8a',
         weight: 2,
@@ -212,7 +228,7 @@ class MosdacTestMap {
       processGeom(geoData);
     }
 
-    return polygonCount > 0;
+    return polygonCount;
   }
 
   /**
@@ -424,14 +440,17 @@ class MosdacTestMap {
         // Multiplies the raster layer by the polygon mask using 'destination-in'.
         // Pixels inside India retain exact color/value; all pixels outside (Pakistan,
         // Nepal, Bhutan, Bangladesh, China/Tibet, seas) are permanently set to alpha 0.
+        let maskApplied = false;
+        let polygonProjectedCount = 0;
         if (self.clipToBoundary && self.boundaryGeoJson) {
-          self.renderBoundaryMask(this._maskCanvas, this._map, self.boundaryGeoJson);
+          polygonProjectedCount = self.renderBoundaryMask(this._maskCanvas, this._map, self.boundaryGeoJson);
 
           offCtx.save();
           offCtx.globalAlpha = 1.0;
           offCtx.globalCompositeOperation = 'destination-in';
           offCtx.drawImage(this._maskCanvas, 0, 0);
           offCtx.restore();
+          maskApplied = true;
         }
 
         // Abort if a newer render pass started
@@ -443,9 +462,9 @@ class MosdacTestMap {
         visCtx.globalAlpha = self.layerOpacity;
         visCtx.drawImage(this._offscreenCanvas, 0, 0);
 
-        // Section 15: Structured Debug Metrics
+        // Section 14: Structured Debug Metrics
         if (self.enableDebugMetrics) {
-          console.log(`[MOSDAC_METRICS] Product: ${self.productId} | Grid cells received: ${self.allPoints.length} | Valid cells: ${validCellsCount} | Boundary Mask: ${self.clipToBoundary ? 'APPLIED (SOI)' : 'BYPASS (Ocean)'} | Outside bleed: 0 px | Mask applied: ${self.clipToBoundary}`);
+          console.log(`[MOSDAC_DEBUG] product=${self.productId} | data_points=${self.allPoints.length} | canvas_size=${size.x}x${size.y} | india_polygon_loaded=${Boolean(self.boundaryGeoJson)} | india_polygon_projected=${polygonProjectedCount > 0} | mask_applied=${maskApplied} | rendered_inside_mask=${validCellsCount}`);
         }
       }
     });
@@ -488,16 +507,16 @@ class MosdacTestMap {
     const minParam = (this.defaultMinThreshold > -900) ? `&min_val=${this.defaultMinThreshold}` : '';
     const candidates = [];
     if (window.location && window.location.origin && window.location.origin.startsWith('http')) {
-      candidates.push(`/api/weather/mosdac/products/${this.productId}/points?limit=60000${minParam}`);
+      candidates.push(`/api/weather/mosdac/products/${this.productId}/points?limit=150000${minParam}`);
     }
     const host = (window.location && window.location.hostname) ? window.location.hostname : '127.0.0.1';
-    candidates.push(`http://${host}:8000/api/weather/mosdac/products/${this.productId}/points?limit=60000${minParam}`);
-    candidates.push(`http://127.0.0.1:8000/api/weather/mosdac/products/${this.productId}/points?limit=60000${minParam}`);
-    candidates.push(`http://localhost:8000/api/weather/mosdac/products/${this.productId}/points?limit=60000${minParam}`);
+    candidates.push(`http://${host}:8000/api/weather/mosdac/products/${this.productId}/points?limit=150000${minParam}`);
+    candidates.push(`http://127.0.0.1:8000/api/weather/mosdac/products/${this.productId}/points?limit=150000${minParam}`);
+    candidates.push(`http://localhost:8000/api/weather/mosdac/products/${this.productId}/points?limit=150000${minParam}`);
 
     for (const url of candidates) {
       try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+        const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
         if (res.ok) {
           const data = await res.json();
           if (data.points && data.points.length > 0) {
