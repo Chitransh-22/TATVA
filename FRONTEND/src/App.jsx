@@ -10,6 +10,7 @@ import { AuthModal } from './components/AuthModal';
 import { NATIONAL_METRICS } from './data/weatherData';
 import { weatherStore } from './data/weatherStore';
 import { useWeatherWebSocket } from './hooks/useWeatherWebSocket';
+import { getProductDefinition, DEFAULT_PRODUCT_ID } from './data/mosdacProducts';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './App.css';
 
@@ -45,6 +46,16 @@ export function App() {
   // Active Weather Data Source (Default: MOSDAC, synchronized from metadata)
   const [activeSource, setActiveSource] = useState('MOSDAC');
 
+  // Active MOSDAC Product Selection (Default: HEM Precipitation Rate)
+  const [activeProductId, setActiveProductId] = useState('3SIMG_L2B_HEM');
+  const [productData, setProductData] = useState(null);
+  const [productStatusMap, setProductStatusMap] = useState({});
+
+  // Client-side In-memory Product Data Cache and Request Counter (Race Condition Protection)
+  const productCacheRef = useRef(new Map());
+  const productRequestIdRef = useRef(0);
+  const productAbortRef = useRef(null);
+
   // Single Persistent WebSocket Hook (Incremental updates, auto-reconnect, heartbeat)
   const reconnectHandlerRef = useRef(null);
   const liveUpdateHandlerRef = useRef(null);
@@ -53,6 +64,8 @@ export function App() {
       liveUpdateHandlerRef.current(batch);
     }
   }, []);
+
+  const activeProductCategory = getProductDefinition(activeProductId)?.category || 'weather';
 
   const { status: wsStatus, telemetry: wsTelemetry } = useWeatherWebSocket(
     selectedState,
@@ -63,7 +76,9 @@ export function App() {
       }
     }, []),
     activeSource,
-    handleLiveWeatherUpdate
+    handleLiveWeatherUpdate,
+    activeProductId,
+    activeProductCategory
   );
 
   // Live Summary from WebSocket for Metric Tiles
@@ -388,38 +403,217 @@ export function App() {
     };
   }, [fetchDistrict, fetchOverview, fetchState]);
 
-  // Wire Live WebSocket Update Handler (Step 7 & 8)
+  // =========================================================================
+  // MOSDAC Product Catalog & Observations Fetchers
+  // =========================================================================
+
+  const fetchProductCatalog = useCallback(async () => {
+    try {
+      const res = await fetch('/api/weather/mosdac/products');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (json && Array.isArray(json.products)) {
+        const statusMap = {};
+        json.products.forEach((p) => {
+          let st = 'UNAVAILABLE';
+          if (p.has_live_data) {
+            st = 'LIVE DATA';
+          } else if (p.operational_status === 'available') {
+            st = 'SNAPSHOT';
+          }
+          statusMap[p.product_id] = {
+            status: st,
+            latest: p.latest_observation_time,
+            operationalStatus: p.operational_status,
+            unavailabilityReason: p.unavailability_reason,
+            name: p.name,
+            category: p.category,
+          };
+        });
+        setProductStatusMap(statusMap);
+        return statusMap;
+      }
+    } catch (err) {
+      console.warn('Product catalog fetch warning:', err.message);
+    }
+    return null;
+  }, []);
+
+  const fetchProductData = useCallback(async (productId, time = null, isLiveUpdate = false) => {
+    if (!productId) return null;
+
+    // Fast-path: Check memory cache first (skip loading spinner if cached and not a forced live update)
+    if (!isLiveUpdate && !time && productCacheRef.current.has(productId)) {
+      const cached = productCacheRef.current.get(productId);
+      setProductData(cached);
+      return cached;
+    }
+
+    const requestId = ++productRequestIdRef.current;
+    if (productAbortRef.current) {
+      productAbortRef.current.abort();
+      productAbortRef.current = null;
+    }
+
+    const controller = new AbortController();
+    productAbortRef.current = controller;
+
+    // Only show loading if we don't already have some data displayed for this product
+    if (!productCacheRef.current.has(productId)) {
+      setIsLoading(true);
+      const def = getProductDefinition(productId);
+      setLoadingMsg(`Querying ${def.productName} (${def.satellite})...`);
+    }
+
+    try {
+      let data = null;
+      let url = `/api/weather/mosdac/products/${encodeURIComponent(productId)}/points?limit=150000`;
+      if (time) url += `&observation_time=${encodeURIComponent(time)}`;
+
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (res.ok) {
+          const json = await res.json();
+          if (json && json.status === 'SUCCESS' && Array.isArray(json.points) && json.points.length > 0) {
+            data = json;
+          }
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') return null;
+        console.warn(`[MOSDAC API] Points API fetch for ${productId} failed, checking bundle:`, e.message);
+      }
+
+      // Fallback: If remote API yielded no points or had an error, try offline mosdac_bundle.json
+      if (!data) {
+        try {
+          const bundleRes = await fetch('/data/mosdac_bundle.json', { signal: controller.signal });
+          if (bundleRes.ok) {
+            const bundle = await bundleRes.json();
+            if (bundle && bundle[productId]) {
+              data = {
+                status: 'SUCCESS',
+                source: 'bundle_fallback',
+                product_id: productId,
+                summary: bundle[productId].summary,
+                unit: bundle[productId].unit,
+                points: bundle[productId].points,
+                total_points: bundle[productId].points.length,
+              };
+            }
+          }
+        } catch (bundleErr) {
+          if (bundleErr.name === 'AbortError') return null;
+          console.warn(`Bundle fallback failed for ${productId}:`, bundleErr);
+        }
+      }
+
+      // Check for stale response
+      if (requestId !== productRequestIdRef.current) {
+        console.log(`[REQUEST #${requestId} IGNORED] Stale product response for ${productId}`);
+        return null;
+      }
+
+      if (data) {
+        productCacheRef.current.set(productId, data);
+        setProductData(data);
+      } else {
+        console.warn(`No observation data available for ${productId}`);
+      }
+
+      return data;
+    } catch (err) {
+      if (err.name === 'AbortError') return null;
+      console.error(`Failed to load data for product ${productId}:`, err);
+    } finally {
+      if (requestId === productRequestIdRef.current) {
+        setIsLoading(false);
+      }
+    }
+  }, []);
+
+  const handleSelectProduct = useCallback((productId) => {
+    if (!productId || productId === activeProductId) return;
+    setActiveProductId(productId);
+    fetchProductData(productId, selectedTime);
+  }, [activeProductId, fetchProductData, selectedTime]);
+
+  // Wire Live WebSocket Update Handler (MOSDAC + In-place update)
   useEffect(() => {
     liveUpdateHandlerRef.current = (batch) => {
       const timestamp = batch.timestamp || batch.observation_time;
-      console.log(`[WEATHER]\nApplying update:\n${timestamp}`);
+      const batchProductId = batch.product_id || batch.product || '3SIMG_L2B_HEM';
+      console.log(`[MOSDAC WS LIVE UPDATE] product=${batchProductId} time=${timestamp}`);
 
-      // Invalidate client-side caches so the new observation is queried fresh from PostgreSQL
-      overviewCacheRef.current.clear();
-      stateCacheRef.current.clear();
-      districtCacheRef.current.clear();
+      // Update product status in productStatusMap to LIVE DATA
+      setProductStatusMap((prev) => ({
+        ...prev,
+        [batchProductId]: {
+          ...(prev[batchProductId] || {}),
+          status: 'LIVE DATA',
+          latest: timestamp,
+        },
+      }));
 
-      const cur = selectionRef.current;
-      if (cur.selectedDistrict && cur.selectedState) {
-        fetchDistrict(cur.selectedState, cur.selectedDistrict, timestamp);
-      } else if (cur.selectedState) {
-        fetchState(cur.selectedState, timestamp);
-      } else {
-        fetchOverview(timestamp);
+      // Invalidate the cache for this product
+      productCacheRef.current.delete(batchProductId);
+
+      // If this update matches the currently active product, update the map layer IN-PLACE
+      if (batchProductId === activeProductId) {
+        if (batch.points && batch.points.length > 0) {
+          const updatedProductData = {
+            status: 'SUCCESS',
+            source: 'websocket_live',
+            product_id: batchProductId,
+            summary: {
+              ...(productData?.summary || {}),
+              observation_time_utc: timestamp,
+              observation_time_ist: batch.observation_time_ist || `${timestamp} (Live)`,
+              total_points: batch.points.length,
+              min_value: batch.min_value,
+              max_value: batch.max_value,
+              mean_value: batch.mean_value,
+            },
+            points: batch.points,
+            total_points: batch.points.length,
+          };
+          productCacheRef.current.set(batchProductId, updatedProductData);
+          setProductData(updatedProductData);
+        } else {
+          // Fetch fresh points for active product
+          fetchProductData(batchProductId, timestamp, true);
+        }
+
+        // Also if it's rainfall, refresh the overview/state/district data for rainfall tiles
+        if (batchProductId === '3SIMG_L2B_HEM' || batchProductId === '3SIMG_L2G_IMR') {
+          overviewCacheRef.current.clear();
+          stateCacheRef.current.clear();
+          districtCacheRef.current.clear();
+
+          const cur = selectionRef.current;
+          if (cur.selectedDistrict && cur.selectedState) {
+            fetchDistrict(cur.selectedState, cur.selectedDistrict, timestamp);
+          } else if (cur.selectedState) {
+            fetchState(cur.selectedState, timestamp);
+          } else {
+            fetchOverview(timestamp);
+          }
+        }
       }
       fetchMetadata();
     };
-  }, [fetchDistrict, fetchMetadata, fetchOverview, fetchState]);
+  }, [activeProductId, fetchDistrict, fetchMetadata, fetchOverview, fetchProductData, fetchState, productData]);
 
   // =========================================================================
   // Initial Load (Parallel non-blocking fetch)
   // =========================================================================
 
   useEffect(() => {
-    // Parallel initial load: metadata for time dropdowns, overview for 7-day rolling dataset
+    // Parallel initial load: metadata, product catalog, initial overview, and active product data
     fetchMetadata();
+    fetchProductCatalog();
     fetchOverview();
-  }, [fetchMetadata, fetchOverview]);
+    fetchProductData('3SIMG_L2B_HEM');
+  }, [fetchMetadata, fetchProductCatalog, fetchOverview, fetchProductData]);
 
   // =========================================================================
   // Background Metadata Freshness Poll (Telemetry status)
@@ -585,6 +779,9 @@ export function App() {
               onSelectState={handleSelectState}
               regionFilter={regionFilter}
               onRegionChange={setRegionFilter}
+              activeProductId={activeProductId}
+              onSelectProduct={handleSelectProduct}
+              productStatusMap={productStatusMap}
             />
           </ErrorBoundary>
 
@@ -613,6 +810,10 @@ export function App() {
               wsTelemetry={wsTelemetry}
               liveSummary={liveSummary}
               activeSource={activeSource}
+              activeProductId={activeProductId}
+              onSelectProduct={handleSelectProduct}
+              productData={productData}
+              productStatusMap={productStatusMap}
             />
           </ErrorBoundary>
 
