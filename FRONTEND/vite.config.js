@@ -18,6 +18,15 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         ws: true,
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            // Suppress noisy client abort / reset warnings on HMR or tab reload
+            if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET' || err.code === 'EPIPE') {
+              return;
+            }
+            console.error('[vite ws proxy error]', err.message || err);
+          });
+        },
       },
     },
   },

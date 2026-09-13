@@ -171,10 +171,10 @@ export function AnalyticsSidebar({
                     <span className="rank-badge">{idx + 1}</span>
                     <div className="region-details">
                       <span className="region-name">{st.state_name}</span>
-                      <span className="region-sub">Avg: {st.avg_precipitation.toFixed(1)} mm</span>
+                      <span className="region-sub">Avg: {st.avg_precipitation.toFixed(1)} mm/hr</span>
                     </div>
                     <div className="region-metrics">
-                      <span className="region-peak">{st.max_precipitation.toFixed(1)} mm</span>
+                      <span className="region-peak">{st.max_precipitation.toFixed(1)} mm/hr</span>
                       <span
                         className="region-tag"
                         style={{
@@ -242,7 +242,7 @@ export function AnalyticsSidebar({
                         <span className="region-sub">{dist.total_points} grid points</span>
                       </div>
                       <div className="region-metrics">
-                        <span className="region-peak">{dist.max_precipitation.toFixed(1)} mm</span>
+                        <span className="region-peak">{dist.max_precipitation.toFixed(1)} mm/hr</span>
                         <span
                           className="region-tag"
                           style={{
@@ -298,7 +298,7 @@ export function AnalyticsSidebar({
                   <div
                     key={pt.observation_time}
                     className="chart-col"
-                    title={`${pt.observation_ist}\nAvg: ${pt.avg_precipitation.toFixed(2)} mm\nPeak: ${pt.max_precipitation.toFixed(1)} mm`}
+                    title={`${pt.observation_ist}\nAvg: ${pt.avg_precipitation.toFixed(2)} mm/hr\nPeak: ${pt.max_precipitation.toFixed(1)} mm/hr`}
                   >
                     <div className="col-bar-container">
                       <div

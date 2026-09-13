@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 from sqlalchemy import select, func, text
-from app.database.connection import AsyncSessionLocal
+from app.database.connection import AsyncSessionLocal, is_database_reachable
 from app.database.models import AggregatedWeather, WeatherAnomaly
 
 logger = logging.getLogger(__name__)
@@ -13,6 +13,9 @@ class AnalyticsAggregator:
 
     async def compute_rollups_for_observation(self, obs_time: datetime) -> None:
         """Compute Daily, 7-Day, and 30-Day pre-aggregates for India."""
+        if not is_database_reachable():
+            logger.debug("[Analytics] Database unreachable; skipping rollups")
+            return
         logger.info(f"Computing analytics rollups around {obs_time.isoformat()}...")
         try:
             async with AsyncSessionLocal() as session:
@@ -171,6 +174,8 @@ class AnalyticsAggregator:
         extreme_threshold_mm: float = 65.0  # IMERG extreme rainfall threshold (Indian Met Dept Heavy Rain is >64.5mm)
     ) -> int:
         """Identify observation points exceeding heavy/extreme rainfall thresholds."""
+        if not is_database_reachable():
+            return 0
         try:
             async with AsyncSessionLocal() as session:
                 query = text("""

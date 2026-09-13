@@ -1,65 +1,149 @@
-/**
- * NASA IMERG Standard Color Ramp
- * - < 0.1 mm: Transparent
- * - 0.1 - 2.5 mm: Light cyan / sky blue (#38bdf8)
- * - 2.5 - 7.5 mm: Vibrant green (#22c55e)
- * - 7.5 - 15 mm: Yellow-green (#a3e635)
- * - 15 - 30 mm: Amber-yellow (#facc15)
- * - 30 - 50 mm: Orange (#f97316)
- * - 50 - 100 mm: Crimson red (#ef4444)
- * - 100+ mm: Magenta / Deep violet (#a855f7 / #7e22ce)
- */
-export function getPrecipitationColor(val) {
-  if (val === null || val === undefined || val < 0.1) return 'transparent';
-  if (val < 2.5) return 'rgba(56, 189, 248, 0.88)';
-  if (val < 7.5) return 'rgba(34, 197, 94, 0.90)';
-  if (val < 15.0) return 'rgba(163, 230, 53, 0.92)';
-  if (val < 30.0) return 'rgba(250, 204, 21, 0.94)';
-  if (val < 50.0) return 'rgba(249, 115, 22, 0.95)';
-  if (val < 100.0) return 'rgba(239, 68, 68, 0.96)';
-  if (val < 200.0) return 'rgba(217, 70, 239, 0.98)';
-  return 'rgba(126, 34, 206, 1.0)';
-}
+import { useState } from 'react';
+import { ChevronDown, ChevronUp, Layers } from 'lucide-react';
+import {
+  getProductColor,
+  getProductCategoryDesc,
+  getProductRgb,
+  getProductDefinition,
+  DEFAULT_PRODUCT_ID,
+} from '../data/mosdacProducts';
+import {
+  getRainfallColor,
+  getCategoryBadgeStyle,
+  getPrecipitationRgb,
+} from '../utils/rainfallMetrics';
 
-export function getCategoryBadgeStyle(category) {
-  const cat = category.toLowerCase();
-  if (cat.includes('extremely') || cat.includes('violent')) {
-    return { bg: '#fdf4ff', text: '#7e22ce', border: '#f0abfc' };
-  }
-  if (cat.includes('very heavy')) {
-    return { bg: '#fef2f2', text: '#b91c1c', border: '#fca5a5' };
-  }
-  if (cat.includes('heavy')) {
-    return { bg: '#fff7ed', text: '#c2410c', border: '#fdba74' };
-  }
-  if (cat.includes('moderate')) {
-    return { bg: '#fefce8', text: '#854d0e', border: '#fde047' };
-  }
-  if (cat.includes('light')) {
-    return { bg: '#f0fdf4', text: '#15803d', border: '#86efac' };
-  }
-  return { bg: '#f8fafc', text: '#64748b', border: '#e2e8f0' };
-}
+export {
+  getRainfallColor,
+  getCategoryBadgeStyle,
+  getPrecipitationRgb,
+  getProductColor,
+  getProductCategoryDesc,
+  getProductRgb,
+};
 
-export function Legend() {
+export const getPrecipitationColor = getRainfallColor;
+
+export function Legend({ productConfig, activeProductId }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const config = productConfig || getProductDefinition(activeProductId || DEFAULT_PRODUCT_ID);
+  const colorScale = config?.colorScale || [];
+  const isCategorical = config?.renderType === 'categorical_mask' || config?.productId?.includes('FOG');
+
+  // Build CSS linear gradient for continuous scales
+  const gradientStops = colorScale.length > 0
+    ? [...colorScale].reverse().map((step, idx) => {
+        const pct = Math.round((idx / Math.max(1, colorScale.length - 1)) * 100);
+        return `${step.color} ${pct}%`;
+      }).join(', ')
+    : '#0284c7 0%, #38bdf8 100%';
+
   return (
-    <div className="map-legend" role="region" aria-label="Precipitation Intensity Legend">
+    <div
+      className="map-legend"
+      role="region"
+      aria-label={`${config?.productName || 'Product'} Legend`}
+      style={{
+        width: isExpanded ? '260px' : '230px',
+        transition: 'all 0.2s ease-in-out',
+      }}
+    >
+      {/* Legend Header */}
       <div className="legend-header">
-        <span className="legend-title">Precipitation Rate</span>
-        <span className="legend-unit">mm/hr</span>
+        <div className="flex items-center gap-1.5 min-w-0 pr-1">
+          <span className="text-xs">{config?.icon || '🛰️'}</span>
+          <span className="legend-title truncate text-[11px]" title={config?.legendTitle || config?.productName}>
+            {config?.legendTitle || config?.shortName || config?.productName}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="legend-unit">
+            {config?.unit ? `(${config.unit})` : ''}
+          </span>
+          {colorScale.length > 0 && (
+            <button
+              onClick={() => setIsExpanded(!isExpanded)}
+              className="text-slate-400 hover:text-slate-700 transition-colors p-0.5 rounded cursor-pointer"
+              title={isExpanded ? 'Collapse Legend' : 'Expand Legend'}
+              aria-label={isExpanded ? 'Collapse Legend' : 'Expand Legend'}
+            >
+              {isExpanded ? (
+                <ChevronDown className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronUp className="w-3.5 h-3.5" />
+              )}
+            </button>
+          )}
+        </div>
       </div>
-      <div className="legend-bar-track">
-        <div className="legend-gradient-bar" />
-      </div>
-      <div className="legend-ticks">
-        <span>0</span>
-        <span>2.5</span>
-        <span>7.5</span>
-        <span>15</span>
-        <span>30</span>
-        <span>50</span>
-        <span>100+</span>
-      </div>
+
+      {/* Categorical Mode (e.g. FOG) */}
+      {isCategorical ? (
+        <div className="flex flex-col gap-1.5 mt-1.5">
+          {colorScale.map((step) => (
+            <div key={step.label} className="flex items-center justify-between text-[10px] text-slate-700">
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-3 h-3 rounded-xs border border-slate-300"
+                  style={{ backgroundColor: step.color }}
+                />
+                <span className="font-medium">{step.label}</span>
+              </div>
+              <span className="font-mono text-slate-500 font-semibold">{step.range}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* Continuous Mode (HEM, IMR, UTH, OLR, SST, SNW, AOD, CTP) */
+        <div className="mt-1">
+          {/* Continuous Gradient Track */}
+          <div className="legend-bar-track">
+            <div
+              className="legend-gradient-bar"
+              style={{
+                background: `linear-gradient(to right, ${gradientStops})`,
+              }}
+            />
+          </div>
+
+          {/* Min and Max Range Ticks */}
+          {colorScale.length > 0 && (
+            <div className="legend-ticks">
+              <span>{colorScale[colorScale.length - 1]?.min ?? 0}</span>
+              {colorScale.length > 2 && (
+                <span>{colorScale[Math.floor(colorScale.length / 2)]?.min}</span>
+              )}
+              <span>{colorScale[0]?.min}+</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Expanded Multi-Step Breakdown Table */}
+      {isExpanded && !isCategorical && colorScale.length > 0 && (
+        <div className="mt-2.5 pt-2 border-t border-slate-200/80 flex flex-col gap-1 max-h-48 overflow-y-auto pr-0.5">
+          {colorScale.map((step, idx) => (
+            <div
+              key={idx}
+              className="flex items-center justify-between text-[10px] text-slate-700 py-0.5"
+            >
+              <div className="flex items-center gap-1.5 min-w-0 pr-1">
+                <span
+                  className="w-2.5 h-2.5 rounded-xs shrink-0 border border-black/10"
+                  style={{ backgroundColor: step.color }}
+                />
+                <span className="truncate text-slate-600 font-medium" title={step.label}>
+                  {step.label}
+                </span>
+              </div>
+              <span className="font-mono text-slate-500 font-semibold shrink-0 text-[9.5px]">
+                {step.range || `≥ ${step.min}`}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

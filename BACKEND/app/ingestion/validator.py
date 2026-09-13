@@ -94,8 +94,11 @@ class GranuleValidator:
         if precip_min < 0.0:
             errors.append(f"Invalid negative precipitation detected: min={precip_min}")
 
-        if precip_max > 5000.0:
-            errors.append(f"Extreme unreasonable precipitation (>5000 mm): max={precip_max}")
+        # Distinguish 30-minute rain rate product (mm/hr) from multi-day accumulation products (.1day, .3day, .7day in mm)
+        is_multiday = any(p in str(csv_path) for p in [".7day", ".3day", ".1day", "7day", "3day", "1day"])
+        max_allowed = 50000.0 if is_multiday else 5000.0
+        if precip_max > max_allowed:
+            errors.append(f"Extreme unreasonable precipitation (>{max_allowed} mm): max={precip_max}")
 
         # 5. Null threshold check across observation time and IDs
         if df["granule_id"].isnull().any():

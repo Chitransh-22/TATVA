@@ -1,0 +1,338 @@
+@startuml nasa-pipeline
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Segoe UI", sans-serif
+skinparam defaultFontSize 12
+skinparam roundCorner 6
+skinparam shadowing false
+skinparam packageStyle rectangle
+
+top to bottom direction
+skinparam linetype ortho
+skinparam nodesep 10
+skinparam ranksep 18
+
+skinparam rectangle<<flank>> {
+  BorderColor transparent
+  BackgroundColor transparent
+  FontColor transparent
+}
+
+
+skinparam title {
+  FontSize 18
+  FontStyle bold
+  FontColor #0F172A
+}
+
+skinparam package {
+  BackgroundColor #FFFDE3
+  BorderColor #C2B755
+  FontColor #1E293B
+  FontStyle bold
+  FontSize 13
+}
+skinparam component {
+  BackgroundColor #E9E9FF
+  BorderColor #7C7CE8
+  FontColor #1E1B4B
+  FontSize 11
+}
+skinparam database {
+  BackgroundColor #E7E7FF
+  BorderColor #6366F1
+  FontColor #1E1B4B
+  FontSize 11
+}
+skinparam queue {
+  BackgroundColor #FEF3C7
+  BorderColor #D97706
+  FontColor #78350F
+  FontSize 11
+}
+skinparam file {
+  BackgroundColor #F1F5F9
+  BorderColor #94A3B8
+  FontColor #334155
+  FontSize 11
+}
+skinparam arrow {
+  Color #475569
+  FontColor #334155
+  FontSize 10
+}
+
+title RITU PLATFORM - NASA IMERG END-TO-END DATA PIPELINE ARCHITECTURE
+
+' ==============================================================================
+' STAGE 1: DISCOVERY & SCHEDULING
+' ==============================================================================
+package "1. DISCOVERY & SCHEDULING" as S1 {
+  [NASA PPS / IMERG Remote Source\n<size:9.5>NASA OpenSearch + PPS Text Directory\n3B-HHR-L.MS.MRG.3IMERG.*.30min.zip</size>] as C1_1
+  [IngestionScheduler\n<size:9.5>FastAPI startup background task\nDiscovery every 30m • Manual trigger</size>] as C1_2
+  [GranuleDiscoveryService\n<size:9.5>OpenSearch discovery + PPS fallback\nRegisters in ingestion_ledger</size>] as C1_3
+  queue "Kafka Topic\n<b>ritu.granules.discovered</b>\n<size:9.5>{granule_id, source_url, obs_time}</size>" as C1_4
+  
+  C1_1 -down-> C1_3 : Query NASA Source
+  C1_2 -right-> C1_3 : Trigger Discovery
+  C1_3 -right-> C1_4 : Publishes Discovered
+
+  rectangle " " as L1 <<flank>>
+  rectangle " " as R1 <<flank>>
+  L1 -[hidden]right-> C1_2
+  C1_4 -[hidden]right-> R1
+}
+
+' ==============================================================================
+' EXPERIMENTAL DISCOVERY (ISOLATED IN TOP RIGHT - NOT ACTIVE IN PRODUCTION)
+' ==============================================================================
+package "EXPERIMENTAL TESTING\n(NOT ACTIVE IN PRODUCTION)" as EXP #FFF1F2 {
+  component [Discovery & Prototyping\n<b>api-testing/api-testing/mdapi.py</b>\n<b>config.json</b>\n<size:9.5>ISRO MOSDAC / INSAT-3DS HEM\n<i>NOT ACTIVE IN PRODUCTION • PROTOTYPING ONLY</i></size>] as EXP_SCRIPT
+  file "Local Scratch Files\n<size:9.5>Local test payloads & scratch outputs</size>" as EXP_FILE
+  EXP_SCRIPT -> EXP_FILE : Local Extraction
+}
+
+' ==============================================================================
+' STAGE 2: DOWNLOAD & RAW INGESTION
+' ==============================================================================
+package "2. DOWNLOAD & RAW INGESTION" as S2 {
+  queue "Kafka Topic\n<b>ritu.granules.discovered</b>" as C2_0
+  [GranuleDownloader\n<size:9.5>HTTPS Stream (128 KB chunks, .part file)\nHTTP Basic Auth (NASA PPS)</size>] as C2_1
+  file "Raw ZIP Storage & Verification\n<size:9.5>BACKEND/data/raw/{filename}.zip\nCRC32 testzip() • SHA-256 Checksum</size>" as C2_2
+  queue "Kafka Topic\n<b>ritu.granules.raw</b>\n<size:9.5>{raw_file_path, checksum_sha256, granule_id}</size>" as C2_3
+  C2_0 -> C2_1 : Consume Discovered
+  C2_1 -> C2_2 : Download & Verify
+  C2_2 -> C2_3 : Emit Raw Ref
+
+  rectangle " " as L2 <<flank>>
+  rectangle " " as R2 <<flank>>
+  L2 -[hidden]right-> C2_0
+  C2_3 -[hidden]right-> R2
+}
+
+' ==============================================================================
+' STAGE 3: DEDUPLICATION & ROUTING
+' ==============================================================================
+package "3. DEDUPLICATION & ROUTING" as S3 {
+  queue "Kafka Topic\n<b>ritu.granules.raw</b>" as C3_0
+  [DeduplicationLedgerService\n<size:9.5>Checks: granule_id, file exists, SHA-256\nIdempotency & completion verification</size>] as C3_1
+  database "PostgreSQL DB\n<b>ingestion_ledger</b>\n<size:9.5>Tracks: hash, granule_id, status</size>" as C3_2
+  queue "Kafka Topic\n<b>ritu.granules.status</b>\n<size:9.5>Actions: NEW or SKIPPED</size>" as C3_3
+  
+  C3_0 -> C3_1 : Read Granule Ref
+  C3_2 -[hidden]down-> C3_3
+  C3_1 -> C3_2 : Check / Update Ledger
+  C3_1 -> C3_3 : Route NEW / SKIPPED
+
+  rectangle " " as L3 <<flank>>
+  rectangle " " as R3 <<flank>>
+  L3 -[hidden]right-> C3_0
+  C3_3 -[hidden]right-> R3
+}
+
+' ==============================================================================
+' STAGE 4: RASTER EXTRACTION & GEOSPATIAL PROCESSING
+' ==============================================================================
+package "4. RASTER EXTRACTION & GEOSPATIAL PROCESSING" as S4 {
+  queue "Kafka Topic\n<b>ritu.granules.status</b>\n<size:9.5>[Action == NEW]</size>" as C4_0
+  [GranuleExtractor\n<size:9.5>Safe ZIP Decompression\nExtracts 6 GeoTIFF layers (precip, ice, liquid...)</size>] as C4_1
+  [Rasterio + NumPy Engine\n<size:9.5>Affine transform • Pixel-center coords\nIndia BBox Clip (6.0°-37.5°N, 68.0°-97.5°E) • NoData clean</size>] as C4_2
+  file "Transformed CSV File\n<size:9.5>BACKEND/data/transformed/{granule_id}.csv\n10 columns: granule_id, obs_time, lat, lon, 6 layers</size>" as C4_3
+  C4_0 -> C4_1 : Process Task
+  C4_1 -> C4_2 : 6-Layer GeoTIFFs
+  C4_2 -> C4_3 : Stream CSV Matrix
+
+  rectangle " " as L4 <<flank>>
+  rectangle " " as R4 <<flank>>
+  L4 -[hidden]right-> C4_0
+  C4_3 -[hidden]right-> R4
+}
+
+' ==============================================================================
+' STAGE 5: VALIDATION & QUALITY GATE
+' ==============================================================================
+package "5. VALIDATION & QUALITY GATE" as S5 {
+  file "Transformed CSV File" as C5_0
+  [GranuleValidator\n<size:9.5>Validates: 10 cols, non-empty, coords in bounds\nprecip 0 to 5000 mm/hr • valid IDs & obs_time</size>] as C5_1
+  queue "Kafka Topic\n<b>ritu.granules.transformed</b>\n<size:9.5>Valid Records Stream</size>" as C5_2
+  queue "Kafka Topic\n<b>ritu.granules.dlq</b>\n<size:9.5>Dead Letter Queue + data/dlq/*.json</size>" as C5_3 #FFE4E6
+  C5_0 -> C5_1 : Stream Validation
+  C5_1 -> C5_2 : [PASS] Quality Gate
+  C5_1 -> C5_3 : [FAIL] Corrupt / OOB
+
+  rectangle " " as L5 <<flank>>
+  rectangle " " as R5 <<flank>>
+  L5 -[hidden]right-> C5_0
+  C5_2 -[hidden]right-> R5
+}
+
+' ==============================================================================
+' STAGE 6: BULK PERSISTENCE & POSTGIS
+' ==============================================================================
+package "6. BULK PERSISTENCE & POSTGIS" as S6 {
+  queue "Kafka Topic\n<b>ritu.granules.transformed</b>" as C6_0
+  [BulkObservationLoader\n<size:9.5>asyncpg Binary COPY Loader</size>] as C6_1
+  database "Staging Table\n<b>precipitation_observations_staging</b>\n<size:9.5>Unindexed high-speed staging</size>" as C6_2
+  database "PostgreSQL 16 + PostGIS Store\n<b>precipitation_observations</b>\n<size:9.5>ST_SetSRID(ST_MakePoint(lon, lat), 4326)\nMonthly RANGE Partitions • GIST Spatial Index</size>" as C6_3 #BFDBFE
+  C6_0 -> C6_1 : Consume Batch
+  C6_1 -> C6_2 : Binary COPY Into Staging
+  C6_2 -> C6_3 : Atomic Upsert & Point Index
+
+  rectangle " " as L6 <<flank>>
+  rectangle " " as R6 <<flank>>
+  L6 -[hidden]right-> C6_0
+  C6_3 -[hidden]right-> R6
+}
+
+' ==============================================================================
+' STAGE 7: ANALYTICS & REAL-TIME DELIVERY (PARALLEL BRANCHES)
+' ==============================================================================
+package "7. ANALYTICS & REAL-TIME DELIVERY" as S7 {
+  database "PostgreSQL 16 + PostGIS Store\n<b>precipitation_observations</b>" as C7_0 #BFDBFE
+  
+  rectangle "Branch A: Analytics Aggregator" as S7_A #FFFFFF {
+    [Analytics Aggregator\n<size:9.5>Spatial + Temporal Rollups Engine</size>] as C7_AN
+    database "Analytics Data Stores\n<b>aggregated_weather</b>\n<b>weather_anomalies</b> • <b>weather_region_summary</b>" as C7_AG
+    C7_AN -> C7_AG : Persist Rollups
+  }
+  
+  rectangle "Branch B: Real-Time Broadcast" as S7_B #FFFFFF {
+    [Real-Time Broadcast\n<size:9.5>_broadcast_granule_websocket()\nSamples up to 400 points (precip >= 0.1 mm/hr)</size>] as C7_PUB
+  }
+  
+  C7_0 -down-> C7_AN : Batch Slices
+  C7_0 -down-> C7_PUB : Real-Time Stream
+  S7_A -[hidden]right-> S7_B
+
+  rectangle " " as L7 <<flank>>
+  rectangle " " as R7 <<flank>>
+  L7 -[hidden]right-> C7_0
+  S7_B -[hidden]right-> R7
+}
+
+' ==============================================================================
+' STAGE 8: BACKEND API & DATA DELIVERY
+' ==============================================================================
+package "8. BACKEND API & DATA DELIVERY" as S8 {
+  [FastAPI Weather REST API\n<size:9.5>/api/weather/india/overview • /snapshot/7day\n/api/weather/state • /district • /metadata • /diagnostic\n<i>Consumes: PostGIS observations & Analytics</i></size>] as C8_REST
+  [WeatherWebSocketManager\n<size:9.5>/api/weather/ws (FastAPI WebSocket Server)\n<i>Consumes: broadcast_batch() weather_batch stream</i></size>] as C8_WS
+  [FastAPI Ingestion API\n<size:9.5>/api/ingestion/trigger • /status • /ledger • /dlq\nPOST /api/ingestion/nasa/imerg (status/{run_id})\n<i>Triggers: IngestionScheduler discovery</i></size>] as C8_ADMIN
+  
+  C8_REST -[hidden]right-> C8_WS
+  C8_WS -[hidden]right-> C8_ADMIN
+
+  rectangle " " as L8 <<flank>>
+  rectangle " " as R8 <<flank>>
+  L8 -[hidden]right-> C8_REST
+  C8_ADMIN -[hidden]right-> R8
+}
+
+' ==============================================================================
+' STAGE 9: FRONTEND STATE & MAP RENDERING
+' ==============================================================================
+package "9. FRONTEND STATE & MAP RENDERING (REACT 19)" as S9 {
+  [WebSocket Client\n<b>useWeatherWebSocket.js</b>\n<size:9.5>20s heartbeat • Exponential reconnect\nSnapshot resync on reconnect</size>] as C9_1
+  [Weather Store\n<b>weatherStore.js</b>\n<size:9.5>In-memory JS Map • Coordinate key\nTimestamp ordering • Rejects out-of-order frames\nloadSnapshot() • applyBatch() • removeIds()</size>] as C9_2
+  [WeatherMap Component\n<b>WeatherMap.jsx</b>\n<size:9.5>Leaflet 1.9.4 Map Engine</size>] as C9_3
+  [Canvas Layer & Clipping\n<b>CanvasWeatherLayer</b>\n<size:9.5>HTML5 Canvas • Viewport culling • rAF loop\n<b>india_boundary.geojson</b> strict vector clip</size>] as C9_4
+  [NASA IMERG LIVE\nRAINFALL MAP] as C9_5 #D1FAE5
+  
+  C9_1 -> C9_2 : applyBatch() / Snapshots
+  C9_2 -> C9_3 : Store Subscription
+  C9_3 -> C9_4 : Canvas Redraw
+  C9_4 -> C9_5 : Plotted Rainfall Cells
+
+  rectangle " " as L9 <<flank>>
+  rectangle " " as R9 <<flank>>
+  L9 -[hidden]right-> C9_1
+  C9_5 -[hidden]right-> R9
+}
+
+' ==============================================================================
+' STAGE 10: 7-DAY RETENTION & CLEANUP (BACKGROUND LIFECYCLE)
+' ==============================================================================
+package "10. 7-DAY RETENTION & CLEANUP (BACKGROUND LIFECYCLE)" as S10 #F8FAFC {
+  rectangle "PATH A: BACKEND SCHEDULED DATABASE PURGE (EVERY 180 SECONDS / 3 MINUTES)" as S10_BACK #FFFFFF {
+    [Retention Scheduler\n<size:9.5>Periodic loop: runs every 180s (3 min)</size>] as C10_1
+    [Cleanup Worker\n<size:9.5>cleanup_expired_observations(days=7)\nCutoff: MAX(obs_time) - INTERVAL '7 days'</size>] as C10_2
+    database "PostgreSQL 16 + PostGIS\n<b>precipitation_observations</b>\n<size:9.5>PostgreSQL DELETE older than 7 days</size>" as C10_DB #BFDBFE
+    [WeatherWebSocketManager\n<size:9.5>Collects removed observation IDs</size>] as C10_3
+    queue "WebSocket Event\n<b>weather_remove</b>\n<size:9.5>{type: 'weather_remove', ids: [...]}</size>" as C10_4 #FEF3C7
+    
+    C10_1 -> C10_2 : Trigger Cleanup
+    C10_2 -> C10_DB : DELETE > 7d
+    C10_DB -> C10_3 : Removed IDs
+    C10_3 -> C10_4 : Broadcast
+  }
+  
+  rectangle "PATH B: FRONTEND CLIENT STORE RETENTION (EVERY 30 SECONDS)" as S10_FRONT #FFFFFF {
+    [Weather Store\n<b>weatherStore.js</b>\n<size:9.5>In-memory JS Map</size>] as C10_5
+    [Local 7-Day Pruning\n<size:9.5>pruneExpiredRecords()\nTimer: runs every 30s • Purges local points > 7d</size>] as C10_6
+    
+    C10_5 -> C10_6 : In-Memory Map Prune
+  }
+  
+  C10_1 -[hidden]down-> C10_5
+
+  rectangle " " as L10 <<flank>>
+  rectangle " " as R10 <<flank>>
+  L10 -[hidden]right-> C10_1
+  C10_6 -[hidden]right-> R10
+}
+
+' ==============================================================================
+' ARCHITECTURE LEGEND & KAFKA INFRASTRUCTURE (ISOLATED IN BOTTOM RIGHT)
+' ==============================================================================
+package "LEGEND & KAFKA INFRASTRUCTURE" as LEG #F1F5F9 {
+  component "Processing Service / Worker" as L_W #E9E9FF
+  database "PostgreSQL 16 / PostGIS Store" as L_D #E7E7FF
+  queue "Kafka Topic / WebSocket Stream\n<size:9.5>Aiven Cloud Apache Kafka (SASL_SSL / SCRAM-SHA-256)\nConsumer Group: ritu-pipeline-group</size>" as L_K #FEF3C7
+  file "File System Storage / Cache" as L_F #F1F5F9
+  L_W -[hidden]right-> L_D
+  L_D -[hidden]right-> L_K
+  L_K -[hidden]right-> L_F
+}
+
+
+' Vertical Flanking Backbones
+L1 -[hidden]down-> L2
+L2 -[hidden]down-> L3
+L3 -[hidden]down-> L4
+L4 -[hidden]down-> L5
+L5 -[hidden]down-> L6
+L6 -[hidden]down-> L7
+L7 -[hidden]down-> L8
+L8 -[hidden]down-> L9
+L9 -[hidden]down-> L10
+
+R1 -[hidden]down-> R2
+R2 -[hidden]down-> R3
+R3 -[hidden]down-> R4
+R4 -[hidden]down-> R5
+R5 -[hidden]down-> R6
+R6 -[hidden]down-> R7
+R7 -[hidden]down-> R8
+R8 -[hidden]down-> R9
+R9 -[hidden]down-> R10
+
+' Visible Production Flow
+S1 -[#475569,norank]down-> S2 : Discovered Granules
+S2 -[#475569,norank]down-> S3 : Raw ZIP Archives
+S3 -[#475569,norank]down-> S4 : NEW Granules Routing
+S4 -[#475569,norank]down-> S5 : Transformed 10-Col Matrices
+S5 -[#475569,norank]down-> S6 : Validated Geospatial Data
+S6 -[#475569,norank]down-> S7 : Persisted Observations
+
+C7_AG -[#475569,norank]down-> C8_REST : Snapshot & Aggregation Queries
+C7_PUB -[#475569,norank]down-> C8_WS : broadcast_batch() (weather_batch)
+
+S8 -[#475569,norank]down-> S9 : WebSocket Streaming & REST Snapshots
+S9 .[#94A3B8,norank]down.> S10 : Subordinate Lifecycle / Distinct Cleanup Mechanisms
+
+' Positioning EXP to the right of S1
+R1 -[hidden]right-> EXP
+
+' Positioning LEGEND to the right of S10
+R10 -[hidden]right-> LEG
+
+@enduml

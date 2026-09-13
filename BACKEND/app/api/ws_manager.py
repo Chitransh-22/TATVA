@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Set, List, Any
 from fastapi import WebSocket, WebSocketDisconnect
+from app.config import settings
 
 logger = logging.getLogger("ritu.ws")
 
@@ -25,6 +26,9 @@ class ClientSubscription:
     def __init__(self, client_id: str, websocket: WebSocket):
         self.client_id: str = client_id
         self.websocket: WebSocket = websocket
+        self.source: str = getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")
+        self.product: Optional[str] = None
+        self.category: Optional[str] = None
         self.state: Optional[str] = None
         self.district: Optional[str] = None
         self.parameter: str = "precipitation"
@@ -35,8 +39,37 @@ class ClientSubscription:
         self.message_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         self._sender_task: Optional[asyncio.Task] = None
 
-    def matches(self, target_state: Optional[str], target_district: Optional[str]) -> bool:
+    def matches(
+        self,
+        target_state: Optional[str],
+        target_district: Optional[str],
+        target_source: Optional[str] = None,
+        target_product: Optional[str] = None,
+        target_category: Optional[str] = None,
+    ) -> bool:
         """Determine if an incremental update is relevant to this subscriber."""
+        # Source filtering: If client is subscribed to MOSDAC, ignore NASA events (and vice versa)
+        if target_source and self.source:
+            if target_source.strip().upper() != self.source.strip().upper():
+                return False
+
+        # Product filtering: If client specified a specific product, match strictly
+        if self.product and self.product != "*":
+            if target_product and self.product.upper() != target_product.upper():
+                return False
+        elif not self.product:
+            # Default backward-compatibility: unconfigured clients receive default rainfall products
+            if target_product and target_product.upper() not in ("3SIMG_L2B_HEM", "3SIMG_L2G_IMR", "IMERG"):
+                return False
+
+        # Category filtering: If client specified category, match
+        if self.category and self.category != "*":
+            if target_category:
+                sub_cat = self.category.lower().replace("productcategory.", "").strip()
+                tgt_cat = target_category.lower().replace("productcategory.", "").strip()
+                if sub_cat != tgt_cat:
+                    return False
+
         # 1. District level subscriber: only wants updates for this district
         if self.district:
             if target_district:
@@ -68,23 +101,33 @@ class WeatherWebSocketManager:
         self._last_ledger_check: Optional[datetime] = None
         # Monotonically increasing sequence/version number
         self._version_counter: int = 1000
+        # Broadcast observability metrics
+        self.last_broadcast_time: Optional[datetime] = None
+        self.last_broadcast_granule: Optional[str] = None
+        self.last_broadcast_updates_count: int = 0
+        self.total_broadcasts: int = 0
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return real-time broadcast and connection metrics for diagnostics."""
+        return {
+            "connected_clients_count": len(self._clients),
+            "last_broadcast_time": self.last_broadcast_time.isoformat() if self.last_broadcast_time else None,
+            "last_broadcast_time_ist": _to_ist_str(self.last_broadcast_time) if self.last_broadcast_time else None,
+            "last_broadcast_granule": self.last_broadcast_granule,
+            "last_broadcast_updates_count": self.last_broadcast_updates_count,
+            "total_broadcasts": self.total_broadcasts,
+            "version": self._version_counter,
+        }
 
     async def start(self):
-        """Start background broadcast worker."""
+        """Start WebSocket manager."""
         if not self._running:
             self._running = True
-            self._bg_task = asyncio.create_task(self._incremental_background_loop())
-            logger.info("WeatherWebSocketManager background worker started.")
+            logger.info("WeatherWebSocketManager started (event-driven broadcast mode).")
 
     async def stop(self):
-        """Stop background worker and disconnect all clients cleanly."""
+        """Stop manager and disconnect all clients cleanly."""
         self._running = False
-        if self._bg_task:
-            self._bg_task.cancel()
-            try:
-                await self._bg_task
-            except asyncio.CancelledError:
-                pass
         # Close all active sockets
         async with self._lock:
             for sub in list(self._clients.values()):
@@ -133,9 +176,12 @@ class WeatherWebSocketManager:
         client_id: str,
         state: Optional[str] = None,
         district: Optional[str] = None,
+        source: Optional[str] = None,
         parameter: str = "precipitation",
         bounds: Optional[Dict[str, float]] = None,
         zoom: Optional[int] = None,
+        product: Optional[str] = None,
+        category: Optional[str] = None,
     ):
         """Update subscription filters for an existing client without reconnecting."""
         async with self._lock:
@@ -145,17 +191,29 @@ class WeatherWebSocketManager:
 
             sub.state = state.strip() if state else None
             sub.district = district.strip() if district else None
+            if source:
+                sub.source = source.strip().upper()
+            if product:
+                sub.product = product.strip()
+            if category:
+                sub.category = category.strip()
             sub.parameter = parameter
             sub.bounds = bounds
             sub.zoom = zoom
             sub.last_timestamp = datetime.now(timezone.utc)
 
-        logger.info(f"Client {client_id} subscription updated: state={sub.state}, district={sub.district}")
+        logger.info(
+            f"Client {client_id} subscription updated: source={sub.source}, product={sub.product}, "
+            f"category={sub.category}, state={sub.state}, district={sub.district}"
+        )
 
         # Send subscription confirmation
         ack_msg = {
             "type": "subscribed",
             "subscription": {
+                "source": sub.source,
+                "product": sub.product,
+                "category": sub.category,
                 "state": sub.state,
                 "district": sub.district,
                 "parameter": sub.parameter,
@@ -200,6 +258,13 @@ class WeatherWebSocketManager:
         target_district: Optional[str] = None,
         timestamp: Optional[datetime] = None,
         granule_id: Optional[str] = None,
+        source: Optional[str] = None,
+        product: Optional[str] = None,
+        category: Optional[str] = None,
+        point_count: Optional[int] = None,
+        active_rain_count: Optional[int] = None,
+        max_rainfall: Optional[float] = None,
+        unit: Optional[str] = None,
     ):
         """Broadcast a batch of incremental weather updates strictly to matching subscribers."""
         if not self._clients or not updates:
@@ -207,13 +272,36 @@ class WeatherWebSocketManager:
 
         ts = timestamp or datetime.now(timezone.utc)
         self._version_counter += 1
+        self.last_broadcast_time = ts
+        self.last_broadcast_granule = granule_id or "REALTIME-WEATHER"
+        self.last_broadcast_updates_count = len(updates)
+        self.total_broadcasts += 1
+
+        active_source = (source or getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")).upper()
+        prod = product or ("3SIMG_L2B_HEM" if active_source == "MOSDAC" else "IMERG")
+        cat = category or ("weather" if "3SIMG" in prod or "IMERG" in prod else None)
+        p_count = point_count if point_count is not None else (summary.get("total_points", len(updates)) if summary else len(updates))
+        active_count = active_rain_count if active_rain_count is not None else (summary.get("active_rain_points", len(updates)) if summary else len(updates))
+        max_r = max_rainfall if max_rainfall is not None else (summary.get("max_precipitation", 0.0) if summary else 0.0)
 
         payload = {
-            "type": "weather_batch",
+            "type": "weather_update",
+            "action": "upsert",
+            "source": active_source,
+            "product": prod,
+            "product_id": prod,
+            "category": cat,
+            "unit": unit or (summary.get("unit") if summary else ""),
             "version": self._version_counter,
+            "granule_id": granule_id or f"REALTIME-{active_source}",
+            "observation_time": ts.isoformat(),
+            "received_at": datetime.now(timezone.utc).isoformat(),
             "timestamp": ts.isoformat(),
             "timestamp_ist": _to_ist_str(ts),
-            "granule_id": granule_id or "REALTIME-IMERG",
+            "point_count": p_count,
+            "active_rain_count": active_count,
+            "active_point_count": active_count,
+            "max_rainfall": max_r,
             "state": target_state,
             "district": target_district,
             "updates_count": len(updates),
@@ -228,7 +316,7 @@ class WeatherWebSocketManager:
         async with self._lock:
             targets = [
                 sub for sub in self._clients.values()
-                if sub.matches(target_state, target_district)
+                if sub.matches(target_state, target_district, active_source, prod, cat)
             ]
 
         for sub in targets:
@@ -243,15 +331,20 @@ class WeatherWebSocketManager:
         target_state: Optional[str] = None,
         target_district: Optional[str] = None,
         timestamp: Optional[datetime] = None,
+        source: Optional[str] = None,
     ):
         """Broadcast explicit expiration / deletion of obsolete weather observation points."""
         if not self._clients or not ids:
             return
 
         ts = timestamp or datetime.now(timezone.utc)
+        active_source = (source or getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")).upper()
         payload = json.dumps({
             "type": "weather_remove",
+            "action": "remove",
+            "source": active_source,
             "timestamp": ts.isoformat(),
+            "timestamp_ist": _to_ist_str(ts),
             "ids": ids,
             "state": target_state,
             "district": target_district,
@@ -260,7 +353,7 @@ class WeatherWebSocketManager:
         async with self._lock:
             targets = [
                 sub for sub in self._clients.values()
-                if sub.matches(target_state, target_district)
+                if sub.matches(target_state, target_district, active_source)
             ]
 
         for sub in targets:
@@ -269,188 +362,57 @@ class WeatherWebSocketManager:
             except asyncio.QueueFull:
                 pass
 
-    async def _incremental_background_loop(self):
-        """Periodic background task that generates realistic incremental real-time radar sweeps.
-        
-        Only sends small batches (5-20 points) to currently active subscribers.
-        Zero database overload, zero client freezing!
-        """
-        import random
-        # Seed initial cycle
-        await asyncio.sleep(4)
+    async def broadcast_event(
+        self,
+        event_type: str = "weather_update",
+        action: str = "upsert",
+        point_id: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+        target_state: Optional[str] = None,
+        target_district: Optional[str] = None,
+        timestamp: Optional[datetime] = None,
+        source: Optional[str] = None,
+    ):
+        """Broadcast a single incremental weather event."""
+        if not self._clients:
+            return
 
-        while self._running:
+        ts = timestamp or datetime.now(timezone.utc)
+        self._version_counter += 1
+        self.last_broadcast_time = ts
+        self.last_broadcast_granule = data.get("granule_id") if data else None
+        self.last_broadcast_updates_count = 1
+        self.total_broadcasts += 1
+
+        active_source = (source or (data.get("source") if data else None) or getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")).upper()
+        payload = {
+            "type": event_type,
+            "action": action,
+            "source": active_source,
+            "version": self._version_counter,
+            "id": point_id or (data.get("id") if data else None),
+            "granule_id": data.get("granule_id") if data else None,
+            "observation_time": ts.isoformat(),
+            "timestamp": ts.isoformat(),
+            "timestamp_ist": _to_ist_str(ts),
+            "state": target_state,
+            "district": target_district,
+            "data": data or {},
+        }
+        encoded = json.dumps(payload)
+
+        async with self._lock:
+            targets = [
+                sub for sub in self._clients.values()
+                if sub.matches(target_state, target_district, active_source)
+            ]
+
+        for sub in targets:
             try:
-                await asyncio.sleep(6)  # 6-second incremental batch interval
+                sub.message_queue.put_nowait(encoded)
+            except asyncio.QueueFull:
+                logger.warning(f"Queue full for client {sub.client_id}; dropping message")
 
-                async with self._lock:
-                    active_count = len(self._clients)
-                    active_subs = list(self._clients.values())
-
-                if active_count == 0:
-                    continue
-
-                now_utc = datetime.now(timezone.utc)
-                now_iso = now_utc.isoformat()
-
-                # Group subscribers by (state, district) to batch updates efficiently
-                groups: Dict[tuple, List[ClientSubscription]] = {}
-                for s in active_subs:
-                    key = (s.state, s.district)
-                    groups.setdefault(key, []).append(s)
-
-                for (state, district), _ in groups.items():
-                    # 1. District Incremental Sweep (e.g. Ahmedabad, Surat, Pune)
-                    if district and state:
-                        is_ahmedabad = "ahmad" in district.lower() or "ahmed" in district.lower()
-                        center_lat = 23.02 if is_ahmedabad else 21.17
-                        center_lon = 72.57 if is_ahmedabad else 72.83
-
-                        num_pts = random.randint(3, 7)
-                        updates = []
-                        removals = []
-
-                        for _ in range(num_pts):
-                            dlat = round(center_lat + random.uniform(-0.15, 0.15), 2)
-                            dlon = round(center_lon + random.uniform(-0.15, 0.15), 2)
-                            precip = round(random.uniform(1.2, 38.5), 1)
-                            pt_id = f"{dlat:.2f}_{dlon:.2f}"
-                            updates.append({
-                                "id": pt_id,
-                                "lat": dlat,
-                                "lon": dlon,
-                                "value": precip,
-                                "precipitation": precip,
-                                "liquid": precip,
-                                "ice": round(precip * 0.08, 1),
-                                "liquid_percent": 92.0,
-                                "timestamp": now_iso,
-                            })
-
-                        # Randomly expire 1-2 points that dried up
-                        if random.random() > 0.4:
-                            rem_lat = round(center_lat + random.uniform(-0.18, 0.18), 2)
-                            rem_lon = round(center_lon + random.uniform(-0.18, 0.18), 2)
-                            removals.append(f"{rem_lat:.2f}_{rem_lon:.2f}")
-
-                        max_p = max(p["value"] for p in updates)
-                        summary = {
-                            "avg_precipitation": round(sum(p["value"] for p in updates) / len(updates), 2),
-                            "max_precipitation": max_p,
-                            "min_precipitation": min(p["value"] for p in updates),
-                            "total_points": len(updates) + 40,
-                            "rain_category": "Heavy Rainfall" if max_p > 30 else "Moderate Rain",
-                        }
-
-                        await self.broadcast_batch(
-                            updates=updates,
-                            removals=removals,
-                            summary=summary,
-                            target_state=state,
-                            target_district=district,
-                            timestamp=now_utc,
-                        )
-
-                    # 2. State Incremental Sweep (e.g. Gujarat, Maharashtra, Rajasthan)
-                    elif state:
-                        if "gujarat" in state.lower():
-                            c_lat, c_lon = 22.5, 71.8
-                        elif "maharashtra" in state.lower():
-                            c_lat, c_lon = 19.5, 75.5
-                        elif "rajasthan" in state.lower():
-                            c_lat, c_lon = 26.5, 73.8
-                        else:
-                            c_lat, c_lon = 22.0, 78.0
-
-                        num_pts = random.randint(5, 12)
-                        updates = []
-                        removals = []
-
-                        for _ in range(num_pts):
-                            slat = round(c_lat + random.uniform(-1.8, 1.8), 2)
-                            slon = round(c_lon + random.uniform(-1.8, 1.8), 2)
-                            precip = round(random.uniform(0.8, 45.0), 1)
-                            pt_id = f"{slat:.2f}_{slon:.2f}"
-                            updates.append({
-                                "id": pt_id,
-                                "lat": slat,
-                                "lon": slon,
-                                "value": precip,
-                                "precipitation": precip,
-                                "liquid": precip,
-                                "ice": 0.0,
-                                "liquid_percent": 100.0,
-                                "timestamp": now_iso,
-                            })
-
-                        if random.random() > 0.5:
-                            rlat = round(c_lat + random.uniform(-2.0, 2.0), 2)
-                            rlon = round(c_lon + random.uniform(-2.0, 2.0), 2)
-                            removals.append(f"{rlat:.2f}_{rlon:.2f}")
-
-                        max_p = max(p["value"] for p in updates)
-                        summary = {
-                            "avg_precipitation": round(sum(p["value"] for p in updates) / len(updates), 2),
-                            "max_precipitation": max_p,
-                            "min_precipitation": 0.0,
-                            "total_points": len(updates) + 120,
-                            "rain_category": "Very Heavy Torrential Downpour" if max_p > 40 else "Moderate Rain",
-                        }
-
-                        await self.broadcast_batch(
-                            updates=updates,
-                            removals=removals,
-                            summary=summary,
-                            target_state=state,
-                            target_district=None,
-                            timestamp=now_utc,
-                        )
-
-                    # 3. National Overview Incremental Sweep
-                    else:
-                        num_pts = random.randint(8, 18)
-                        updates = []
-                        removals = []
-
-                        for _ in range(num_pts):
-                            nlat = round(random.uniform(10.0, 32.0), 2)
-                            nlon = round(random.uniform(70.0, 88.0), 2)
-                            precip = round(random.uniform(0.5, 55.0), 1)
-                            pt_id = f"{nlat:.2f}_{nlon:.2f}"
-                            updates.append({
-                                "id": pt_id,
-                                "lat": nlat,
-                                "lon": nlon,
-                                "value": precip,
-                                "precipitation": precip,
-                                "timestamp": now_iso,
-                            })
-
-                        if random.random() > 0.5:
-                            rlat = round(random.uniform(10.0, 32.0), 2)
-                            rlon = round(random.uniform(70.0, 88.0), 2)
-                            removals.append(f"{rlat:.2f}_{rlon:.2f}")
-
-                        await self.broadcast_batch(
-                            updates=updates,
-                            removals=removals,
-                            summary={
-                                "avg_precipitation": 3.85,
-                                "max_precipitation": 58.2,
-                                "min_precipitation": 0.0,
-                                "total_points": 3450,
-                                "rain_category": "Moderate Rain",
-                            },
-                            target_state=None,
-                            target_district=None,
-                            timestamp=now_utc,
-                        )
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in incremental background cycle: {e}", exc_info=True)
-                await asyncio.sleep(5)
 
 
 # Global singleton instance

@@ -1,0 +1,1509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Local Leaflet 1.9.4 with CDN fallback -->
+  <link rel="stylesheet" href="common/leaflet/leaflet.css" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';">
+  <script src="common/leaflet/leaflet.js" onerror="this.onerror=null;this.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';"></script>
+  
+  <!-- Authoritative Survey of India GeoJSON synchronous bundle -->
+  <script src="common/india_boundary.js"></script>
+  <!-- De-facto Visual Boundary for CARTO/OSM Basemap Display -->
+  <script src="common/india_visual_boundary.js"></script>
+  <!-- Shared Offline / Standalone MOSDAC observations bundle -->
+  <script src="common/mosdac_bundle.js"></script>
+  <!-- Legacy standalone data fallback -->
+  <script src="mosdac_data.js"></script>
+  <!-- Shared Test Harness -->
+  <script src="common/test-harness.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      min-height: 100%;
+      height: auto !important;
+      overflow-x: hidden !important;
+      overflow-y: auto !important;
+      background: #090d16;
+      color: #f1f5f9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      padding-bottom: 60px;
+    }
+
+    /* Top Navigation Bar */
+    header {
+      background: rgba(15, 23, 42, 0.9);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 18px 32px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-badge {
+      background: linear-gradient(135deg, #0284c7, #0369a1);
+      color: #fff;
+      font-weight: 900;
+      font-size: 18px;
+      padding: 8px 14px;
+      border-radius: 10px;
+      letter-spacing: 1px;
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.4);
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-sub {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-top: 2px;
+    }
+
+    .header-pills {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 11.5px;
+      font-weight: 700;
+    }
+
+    .pill-green {
+      background: rgba(34, 197, 94, 0.15);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+
+    .pill-blue {
+      background: rgba(2, 132, 199, 0.15);
+      color: #38bdf8;
+      border: 1px solid rgba(2, 132, 199, 0.3);
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      background-color: #22c55e;
+      border-radius: 50%;
+      box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+      animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+    }
+
+    /* Container */
+    .container {
+      max-width: 1400px;
+      margin: 28px auto 0;
+      padding: 0 24px;
+    }
+
+    /* Kafka 5-Topic Architecture Banner */
+    .kafka-section {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(51, 65, 85, 0.7);
+      border-radius: 14px;
+      padding: 18px 22px;
+      margin-bottom: 28px;
+    }
+
+    .kafka-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .kafka-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: #e2e8f0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .kafka-badge {
+      font-size: 11px;
+      background: #1e293b;
+      color: #38bdf8;
+      padding: 3px 9px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      font-weight: 700;
+    }
+
+    .kafka-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .topic-card {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .topic-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+    }
+
+    .topic-card.raw::before { background: #64748b; }
+    .topic-card.weather::before { background: #0284c7; }
+    .topic-card.environment::before { background: #eab308; }
+    .topic-card.ocean::before { background: #14b8a6; }
+    .topic-card.dlq::before { background: #ef4444; }
+
+    .topic-name {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      color: #f8fafc;
+    }
+
+    .topic-desc {
+      font-size: 11px;
+      color: #94a3b8;
+    }
+
+    .topic-meta {
+      font-size: 10.5px;
+      color: #4ade80;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    /* Filters Bar */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .filter-tabs {
+      display: flex;
+      gap: 8px;
+    }
+
+    .tab-btn {
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      padding: 7px 16px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .tab-btn:hover, .tab-btn.active {
+      background: #0284c7;
+      color: #ffffff;
+      border-color: #38bdf8;
+    }
+
+    .live-counter-pill {
+      font-size: 12px;
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+    }
+
+    /* Products Grid */
+    .products-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 20px;
+    }
+
+    .prod-card {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 14px;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .prod-card:hover {
+      transform: translateY(-3px);
+      border-color: #38bdf8;
+      box-shadow: 0 10px 25px rgba(2, 132, 199, 0.15);
+    }
+
+    .prod-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .prod-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      font-weight: 800;
+      color: #38bdf8;
+    }
+
+    .prod-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .category-badge {
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+
+    .cat-weather { background: rgba(2, 132, 199, 0.15); color: #38bdf8; border: 1px solid rgba(2, 132, 199, 0.3); }
+    .cat-ocean { background: rgba(20, 184, 166, 0.15); color: #2dd4bf; border: 1px solid rgba(20, 184, 166, 0.3); }
+    .cat-environment { background: rgba(234, 179, 8, 0.15); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.3); }
+
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 9px;
+      border-radius: 20px;
+      background: rgba(34, 197, 94, 0.15);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+
+    .live-badge.disconnected {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border-color: rgba(239, 68, 68, 0.3);
+    }
+
+    .status-badge {
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+
+    .badge-available { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
+    .badge-unavailable { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); }
+
+    .prod-name {
+      font-size: 15px;
+      font-weight: 800;
+      color: #ffffff;
+      margin-bottom: 6px;
+      line-height: 1.3;
+    }
+
+    .prod-desc {
+      font-size: 12px;
+      color: #94a3b8;
+      line-height: 1.5;
+      margin-bottom: 12px;
+      min-height: 36px;
+    }
+
+    .prod-meta-strip {
+      background: #0b1120;
+      border-radius: 8px;
+      padding: 8px 12px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 16px;
+      border: 1px solid #1e293b;
+      font-size: 11px;
+    }
+
+    .meta-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .meta-label {
+      color: #64748b;
+      font-size: 9.5px;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .meta-val {
+      color: #e2e8f0;
+      font-weight: 700;
+    }
+
+    .prod-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-launch {
+      flex: 1;
+      background: #0284c7;
+      color: #ffffff;
+      text-align: center;
+      padding: 9px 14px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: background 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .btn-launch:hover { background: #0369a1; }
+
+    .btn-disabled {
+      background: #1e293b;
+      color: #64748b;
+      cursor: not-allowed;
+      border: 1px solid #334155;
+    }
+
+    .btn-disabled:hover { background: #1e293b; }
+
+    .btn-sec {
+      background: #1e293b;
+      color: #38bdf8;
+      padding: 9px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid #334155;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-sec:hover { background: #334155; color: #ffffff; }
+
+    .unavailable-note {
+      font-size: 11px;
+      color: #f59e0b;
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      border-radius: 6px;
+      padding: 6px 10px;
+      margin-bottom: 12px;
+    }
+
+    /* Interactive Live Test Map Card inside index.html */
+    .interactive-map-card {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 16px;
+      padding: 22px;
+      margin-bottom: 30px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+    }
+
+    .map-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .map-main-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .map-sub-meta {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-top: 4px;
+    }
+
+    .map-header-badges {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .product-switch-bar {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 8px;
+      margin-bottom: 16px;
+    }
+
+    .prod-switch-btn {
+      background: rgba(30, 41, 59, 0.85);
+      border: 1px solid rgba(71, 85, 105, 0.6);
+      color: #cbd5e1;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+
+    .prod-switch-btn:hover {
+      background: rgba(51, 65, 85, 0.95);
+      color: #fff;
+      border-color: #0284c7;
+    }
+
+    .prod-switch-btn.active {
+      background: linear-gradient(135deg, #0284c7, #0369a1);
+      color: #ffffff;
+      border-color: #38bdf8;
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.4);
+    }
+
+    .map-container-wrap {
+      position: relative;
+      width: 100%;
+      height: 520px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(51, 65, 85, 0.7);
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      background: #0b1120;
+    }
+
+    .inline-legend-card {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      z-index: 1000;
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      padding: 12px 16px;
+      color: #e2e8f0;
+      font-size: 11px;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+      max-height: 220px;
+      overflow-y: auto;
+    }
+
+    .inline-legend-card .legend-title {
+      font-weight: 800;
+      margin-bottom: 8px;
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .inline-legend-card .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .inline-legend-card .color-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+    }
+
+    .inline-legend-card .legend-label {
+      width: 65px;
+      font-weight: 700;
+      color: #94a3b8;
+    }
+
+    .inline-legend-card .legend-desc {
+      color: #cbd5e1;
+    }
+
+    .map-stats-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+      background: rgba(15, 23, 42, 0.6);
+      padding: 12px 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(51, 65, 85, 0.5);
+    }
+
+    .stat-box {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: #64748b;
+      letter-spacing: 0.5px;
+    }
+
+    .stat-val {
+      font-size: 14px;
+      font-weight: 800;
+      color: #f8fafc;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .map-footer-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 14px;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    .control-inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .control-inline select, .control-inline input {
+      background: #1e293b;
+      border: 1px solid #475569;
+      color: #e2e8f0;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 11.5px;
+    }
+
+    .btn-launch-sm {
+      background: rgba(2, 132, 199, 0.2);
+      border: 1px solid rgba(2, 132, 199, 0.5);
+      color: #38bdf8;
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: all 0.15s;
+    }
+
+    .btn-launch-sm:hover {
+      background: #0284c7;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-content">
+      <div class="brand">
+        <div class="logo-badge">TATVA</div>
+        <div>
+          <div class="brand-title">ISRO MOSDAC Satellite Multi-Data Platform</div>
+          <div class="brand-sub">Modular Weather &bull; Environment &bull; Ocean Observations &bull; 5 Kafka Topics</div>
+        </div>
+      </div>
+      <div class="header-pills">
+        <div class="pill pill-green" id="wsPill">
+          <span class="pulse-dot"></span>
+          <span>Live WebSocket Connected</span>
+        </div>
+        <div class="pill pill-blue">
+          <span>Max 5 Kafka Topics</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="container">
+    
+    <!-- Kafka 5-Topic Architecture Banner -->
+    <div class="kafka-section">
+      <div class="kafka-header">
+        <div class="kafka-title">
+          <span>⚡ Canonical 5-Topic Kafka Domain Architecture</span>
+          <span class="kafka-badge">Strict Topic Ceiling</span>
+        </div>
+        <div style="font-size: 11.5px; color: #94a3b8;">
+          Message Key: <code style="color: #38bdf8;">MOSDAC:{product}:{timestamp}</code>
+        </div>
+      </div>
+      <div class="kafka-grid">
+        <div class="topic-card raw">
+          <div class="topic-name">mosdac.raw</div>
+          <div class="topic-desc">Granule discovery, raw HDF5 ingestion events, and download manifest</div>
+          <div class="topic-meta">● Active / Partition 0</div>
+        </div>
+        <div class="topic-card weather">
+          <div class="topic-name">mosdac.weather</div>
+          <div class="topic-desc">HEM Rainfall, CTP Cloud, UTH Humidity, OLR Radiation, Fog Mask</div>
+          <div class="topic-meta">● Active / Partition 0</div>
+        </div>
+        <div class="topic-card environment">
+          <div class="topic-name">mosdac.environment</div>
+          <div class="topic-desc">SNW Snow Cover & FSC, AOD Aerosol Optical Depth (Air Quality)</div>
+          <div class="topic-meta">● Active / Partition 0</div>
+        </div>
+        <div class="topic-card ocean">
+          <div class="topic-name">mosdac.ocean</div>
+          <div class="topic-desc">SST Sea Surface Temperature, Ocean winds & chlorophyll</div>
+          <div class="topic-meta">● Active / Partition 0</div>
+        </div>
+        <div class="topic-card dlq">
+          <div class="topic-name">mosdac.dlq</div>
+          <div class="topic-desc">Dead Letter Queue for corrupted granules and schema violations</div>
+          <div class="topic-meta" style="color:#f87171;">● Monitoring Errors</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Interactive Live Satellite Test Map Section -->
+    <div class="interactive-map-card" id="interactiveMapCard">
+      <div class="map-card-header">
+        <div class="map-title-wrap">
+          <div class="map-main-title">
+            <span id="activeProductIcon">🌧️</span>
+            <span id="activeProductName">INSAT-3DS Hydro-Estimator Precipitation (HEM)</span>
+          </div>
+          <div class="map-sub-meta" id="activeProductMeta">
+            ISRO SAC Ahmedabad &bull; 3SIMG_L2B_HEM &bull; 0.04° (~4 km) &bull; 30-min Cadence
+          </div>
+        </div>
+
+        <div class="map-header-badges">
+          <span class="category-badge cat-weather" id="activeCategoryBadge">weather</span>
+          <div class="live-badge" id="liveBadge">
+            <span class="pulse-dot"></span> LIVE SATELLITE FEED
+          </div>
+        </div>
+      </div>
+
+      <!-- Product Quick-Switch Tabs -->
+      <div class="product-switch-bar" id="prodSwitchBar">
+        <button class="prod-switch-btn active" data-pid="3SIMG_L2B_HEM" onclick="selectMapProduct('3SIMG_L2B_HEM', this)">🌧️ HEM Rain</button>
+        <button class="prod-switch-btn" data-pid="3SIMG_L2G_IMR" onclick="selectMapProduct('3SIMG_L2G_IMR', this)">🌧️ IMR Rain</button>
+        <button class="prod-switch-btn" data-pid="3SIMG_L2B_CTP" onclick="selectMapProduct('3SIMG_L2B_CTP', this)">☁️ CTP Cloud</button>
+        <button class="prod-switch-btn" data-pid="3SIMG_L2B_UTH" onclick="selectMapProduct('3SIMG_L2B_UTH', this)">💧 UTH Humidity</button>
+        <button class="prod-switch-btn" data-pid="3SIMG_L2B_OLR" onclick="selectMapProduct('3SIMG_L2B_OLR', this)">🌡️ OLR Radiation</button>
+        <button class="prod-switch-btn" data-pid="3SIMG_L2C_FOG" onclick="selectMapProduct('3SIMG_L2C_FOG', this)">🌫️ Fog Mask</button>
+        <button class="prod-switch-btn" data-pid="3SIMG_L2B_SST" onclick="selectMapProduct('3SIMG_L2B_SST', this)">🌊 SST Ocean</button>
+        <button class="prod-switch-btn" data-pid="3SIMG_L2C_SNW" onclick="selectMapProduct('3SIMG_L2C_SNW', this)">❄️ Snow Cover</button>
+        <button class="prod-switch-btn" data-pid="3SIMG_L2G_AOD" onclick="selectMapProduct('3SIMG_L2G_AOD', this)">💨 AOD Aerosol</button>
+      </div>
+
+      <!-- Leaflet Map Container -->
+      <div class="map-container-wrap">
+        <div id="map"></div>
+
+        <!-- Inline Legend Overlay -->
+        <div class="inline-legend-card" id="inlineLegend">
+          <div class="legend-title">
+            <span id="legendTitleText">Precipitation Rate</span>
+            <span id="legendUnitText" style="font-weight:normal; color:#64748b;">(mm/hr)</span>
+          </div>
+          <div class="legend-items" id="legendItemsList">
+            <!-- Populated dynamically based on active product -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats Strip -->
+      <div class="map-stats-strip">
+        <div class="stat-box">
+          <span class="stat-label">Total Points</span>
+          <span class="stat-val" id="statTotalPoints">--</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">Max Value</span>
+          <span class="stat-val" id="statMaxValue" style="color:#ef4444;">--</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">Mean Value</span>
+          <span class="stat-val" id="statMeanValue">--</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">Min Threshold</span>
+          <span class="stat-val" id="statMinValue">--</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">Data Source</span>
+          <span class="stat-val" id="statDataSource" style="color:#38bdf8;">LIVE BACKEND API</span>
+        </div>
+      </div>
+
+      <!-- Map Controls & Status Footer -->
+      <div class="map-footer-row">
+        <div class="footer-left">
+          <span>🇮🇳 Survey of India Official Boundary Mask</span> &bull;
+          <span id="statusBarText">Initializing map...</span>
+        </div>
+        <div class="footer-right">
+          <div class="control-inline">
+            <label for="thresholdSelect">Threshold:</label>
+            <select id="thresholdSelect" onchange="testMap.applyFilter(this.value)">
+              <option value="0.1">All (&gt; 0.1)</option>
+              <option value="2.5">Light+ (&gt; 2.5)</option>
+              <option value="7.5">Moderate+ (&gt; 7.5)</option>
+              <option value="15.0">Heavy+ (&gt; 15.0)</option>
+            </select>
+          </div>
+          <div class="control-inline">
+            <label for="opacitySlider">Opacity:</label>
+            <input type="range" id="opacitySlider" min="20" max="100" value="85" style="width:70px;" oninput="testMap.updateOpacity(this.value)">
+          </div>
+          <button class="btn-sec" onclick="testMap.refresh()">↻ Refresh</button>
+          <a id="openDedicatedBtn" href="rainfall/index.html" target="_blank" class="btn-launch-sm">⤢ Fullscreen Map</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters & Live Sync Status -->
+    <div class="filter-bar">
+      <div class="filter-tabs">
+        <button class="tab-btn active" onclick="filterCategory('all', this)">All Products (15)</button>
+        <button class="tab-btn" onclick="filterCategory('weather', this)">Weather (8)</button>
+        <button class="tab-btn" onclick="filterCategory('environment', this)">Environment (4)</button>
+        <button class="tab-btn" onclick="filterCategory('ocean', this)">Ocean (3)</button>
+      </div>
+      <div class="live-counter-pill" id="liveSyncStatus">
+        ⚡ <b>8 Products Live</b> with verified ISRO MOSDAC observations
+      </div>
+    </div>
+
+    <!-- Products Grid -->
+    <div class="products-grid" id="productsGrid">
+      <!-- Product cards injected via JavaScript from REST catalog -->
+    </div>
+
+  </div>
+
+  <script>
+    let allProducts = [];
+    let testMap = null;
+
+    const PRODUCT_CONFIGS = {
+      '3SIMG_L2B_HEM': {
+        productId: '3SIMG_L2B_HEM',
+        productName: 'INSAT-3DS Hydro-Estimator Precipitation (HEM)',
+        category: 'weather',
+        unit: 'mm/hr',
+        icon: '🌧️',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2B_HEM • 0.04° (~4 km) • 30-min Cadence',
+        defaultMinThreshold: 0.1,
+        standalonePath: 'rainfall/index.html',
+        legendTitle: 'Precipitation Rate',
+        thresholdOptions: [
+          { value: '0.1', label: 'All (> 0.1 mm/h)' },
+          { value: '2.5', label: 'Light+ (> 2.5 mm/h)' },
+          { value: '7.5', label: 'Moderate+ (> 7.5 mm/h)' },
+          { value: '15.0', label: 'Heavy+ (> 15.0 mm/h)' },
+          { value: '50.0', label: 'Extreme (> 50.0 mm/h)' }
+        ],
+        colorScale: [
+          { min: 100.0, color: '#a855f7', label: 'Extreme Downpour', range: '> 100.0' },
+          { min: 50.0,  color: '#ef4444', label: 'Torrential Rain', range: '50.0 – 100.0' },
+          { min: 30.0,  color: '#f97316', label: 'Very Heavy Rain', range: '30.0 – 50.0' },
+          { min: 15.0,  color: '#eab308', label: 'Heavy Rain', range: '15.0 – 30.0' },
+          { min: 7.5,   color: '#22c55e', label: 'Moderate Rain', range: '7.5 – 15.0' },
+          { min: 2.5,   color: '#0284c7', label: 'Light Rain', range: '2.5 – 7.5' },
+          { min: 0.1,   color: '#38bdf8', label: 'Very Light Rain', range: '0.1 – 2.5' }
+        ]
+      },
+      '3SIMG_L2G_IMR': {
+        productId: '3SIMG_L2G_IMR',
+        productName: 'INSAT-3DS Multispectral Rainfall (IMR)',
+        category: 'weather',
+        unit: 'mm/hr',
+        icon: '🌧️',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2G_IMR • 0.04° (~4 km) • 30-min Cadence',
+        defaultMinThreshold: 0.1,
+        standalonePath: 'rainfall-imr/index.html',
+        legendTitle: 'Precipitation Rate',
+        thresholdOptions: [
+          { value: '0.1', label: 'All (> 0.1 mm/h)' },
+          { value: '2.5', label: 'Light+ (> 2.5 mm/h)' },
+          { value: '7.5', label: 'Moderate+ (> 7.5 mm/h)' },
+          { value: '15.0', label: 'Heavy+ (> 15.0 mm/h)' },
+          { value: '50.0', label: 'Extreme (> 50.0 mm/h)' }
+        ],
+        colorScale: [
+          { min: 100.0, color: '#a855f7', label: 'Extreme Downpour', range: '> 100.0' },
+          { min: 50.0,  color: '#ef4444', label: 'Torrential Rain', range: '50.0 – 100.0' },
+          { min: 30.0,  color: '#f97316', label: 'Very Heavy Rain', range: '30.0 – 50.0' },
+          { min: 15.0,  color: '#eab308', label: 'Heavy Rain', range: '15.0 – 30.0' },
+          { min: 7.5,   color: '#22c55e', label: 'Moderate Rain', range: '7.5 – 15.0' },
+          { min: 2.5,   color: '#0284c7', label: 'Light Rain', range: '2.5 – 7.5' },
+          { min: 0.1,   color: '#38bdf8', label: 'Very Light Rain', range: '0.1 – 2.5' }
+        ]
+      },
+      '3SIMG_L2B_CTP': {
+        productId: '3SIMG_L2B_CTP',
+        productName: 'Cloud Top Pressure & Temperature (CTP)',
+        category: 'weather',
+        unit: 'hPa',
+        icon: '☁️',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2B_CTP • 0.04° (~4 km) • 30-min Cadence',
+        defaultMinThreshold: 50.0,
+        standalonePath: 'cloud/index.html',
+        legendTitle: 'Cloud Top Pressure',
+        thresholdOptions: [
+          { value: '50', label: 'All (> 50 hPa)' },
+          { value: '250', label: 'Mid-to-Low (< 400 hPa)' },
+          { value: '550', label: 'Low Stratiform (> 550 hPa)' },
+          { value: '700', label: 'Boundary Layer (> 700 hPa)' }
+        ],
+        colorScale: [
+          { min: 850.0, color: '#f97316', label: 'Boundary Layer Stratus', range: '850 – 1013' },
+          { min: 700.0, color: '#eab308', label: 'Low Stratocumulus', range: '700 – 850' },
+          { min: 550.0, color: '#10b981', label: 'Lower-Middle Cloud', range: '550 – 700' },
+          { min: 400.0, color: '#06b6d4', label: 'Mid-Level Altocumulus', range: '400 – 550' },
+          { min: 250.0, color: '#3b82f6', label: 'Upper Tropospheric Cloud', range: '250 – 400' },
+          { min: 50.0,  color: '#a855f7', label: 'Deep Convective Storm Top', range: '50 – 250' }
+        ]
+      },
+      '3SIMG_L2B_UTH': {
+        productId: '3SIMG_L2B_UTH',
+        productName: 'Upper Tropospheric Humidity (UTH)',
+        category: 'weather',
+        unit: '%',
+        icon: '💧',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2B_UTH • 0.04° (~4 km) • 30-min Cadence',
+        defaultMinThreshold: 0.0,
+        standalonePath: 'humidity/index.html',
+        legendTitle: 'Upper Tropospheric Humidity',
+        thresholdOptions: [
+          { value: '0', label: 'All (>= 0%)' },
+          { value: '20', label: 'Moderate+ (> 20%)' },
+          { value: '40', label: 'High+ (> 40%)' },
+          { value: '60', label: 'Very High (> 60%)' },
+          { value: '80', label: 'Saturated (> 80%)' }
+        ],
+        colorScale: [
+          { min: 80.0, color: '#1e3a8a', label: 'Saturated Moisture', range: '> 80%' },
+          { min: 60.0, color: '#0284c7', label: 'High Moisture', range: '60 – 80%' },
+          { min: 40.0, color: '#06b6d4', label: 'Moderate Humidity', range: '40 – 60%' },
+          { min: 20.0, color: '#f59e0b', label: 'Dry Subsidence', range: '20 – 40%' },
+          { min: 0.0,  color: '#d97706', label: 'Arid Upper Air', range: '0 – 20%' }
+        ]
+      },
+      '3SIMG_L2B_OLR': {
+        productId: '3SIMG_L2B_OLR',
+        productName: 'Outgoing Longwave Radiation (OLR)',
+        category: 'weather',
+        unit: 'W/m²',
+        icon: '🌡️',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2B_OLR • 0.04° (~4 km) • 30-min Cadence',
+        defaultMinThreshold: 50.0,
+        standalonePath: 'olr/index.html',
+        legendTitle: 'Outgoing Longwave Radiation',
+        thresholdOptions: [
+          { value: '50', label: 'All (> 50 W/m²)' },
+          { value: '130', label: 'Convective+ (> 130)' },
+          { value: '160', label: 'Mid-Level+ (> 160)' },
+          { value: '200', label: 'Haze/Clear (> 200)' },
+          { value: '240', label: 'Warm Land (> 240)' }
+        ],
+        colorScale: [
+          { min: 280.0, color: '#dc2626', label: 'Arid / Hot Land Surface', range: '> 280 W/m²' },
+          { min: 240.0, color: '#f97316', label: 'Warm Clear Sky', range: '240 – 280' },
+          { min: 200.0, color: '#eab308', label: 'Moderate Cloud / Haze', range: '200 – 240' },
+          { min: 160.0, color: '#10b981', label: 'Thick Mid-Level Cloud', range: '160 – 200' },
+          { min: 130.0, color: '#06b6d4', label: 'Deep Convective Cloud', range: '130 – 160' },
+          { min: 50.0,  color: '#a855f7', label: 'Cold High Cloud Tops', range: '50 – 130' }
+        ]
+      },
+      '3SIMG_L2C_FOG': {
+        productId: '3SIMG_L2C_FOG',
+        productName: 'Night & Day Fog Detection (FOG)',
+        category: 'weather',
+        unit: 'Fog State',
+        icon: '🌫️',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2C_FOG • 1 km / 4 km • 30-min Cadence',
+        defaultMinThreshold: 0.5,
+        standalonePath: 'fog/index.html',
+        legendTitle: 'Fog Detection Mask',
+        thresholdOptions: [
+          { value: '0.0', label: 'All Points (Clear + Fog)' },
+          { value: '0.5', label: 'Fog Pixels Only (val = 1)' }
+        ],
+        colorScale: [
+          { min: 0.5, color: '#0891b2', label: 'Fog Layer Detected', range: '1 (Fog)' },
+          { min: 0.0, color: '#bae6fd', label: 'Clear Sky / No Fog', range: '0 (Clear)' }
+        ]
+      },
+      '3SIMG_L2B_SST': {
+        productId: '3SIMG_L2B_SST',
+        productName: 'Sea Surface Temperature (SST)',
+        category: 'ocean',
+        unit: '°C',
+        icon: '🌊',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2B_SST • 0.04° (~4 km) • 30-min Cadence',
+        defaultMinThreshold: 15.0,
+        standalonePath: 'sst/index.html',
+        legendTitle: 'Sea Surface Temperature',
+        thresholdOptions: [
+          { value: '15.0', label: 'All Marine (> 15°C)' },
+          { value: '23.0', label: 'Mild+ (> 23°C)' },
+          { value: '25.0', label: 'Warm+ (> 25°C)' },
+          { value: '28.0', label: 'Tropical Pool (> 28°C)' }
+        ],
+        colorScale: [
+          { min: 31.0, color: '#dc2626', label: 'Extreme Warm Pool', range: '> 31 °C' },
+          { min: 29.0, color: '#f97316', label: 'Very Warm Tropical Waters', range: '29 – 31 °C' },
+          { min: 27.0, color: '#eab308', label: 'Warm Arabian/Bengal Basin', range: '27 – 29 °C' },
+          { min: 25.0, color: '#10b981', label: 'Moderate Oceanic Waters', range: '25 – 27 °C' },
+          { min: 23.0, color: '#06b6d4', label: 'Mild Marine Upwelling', range: '23 – 25 °C' },
+          { min: 15.0, color: '#0284c7', label: 'Cool Coastal Upwelling', range: '15 – 23 °C' }
+        ]
+      },
+      '3SIMG_L2C_SNW': {
+        productId: '3SIMG_L2C_SNW',
+        productName: 'Fractional Snow Cover (SNW)',
+        category: 'environment',
+        unit: '%',
+        icon: '❄️',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2C_SNW • 1 km projected • Daily',
+        defaultMinThreshold: 1.0,
+        center: [34.0, 77.0],
+        zoom: 6,
+        standalonePath: 'snow/index.html',
+        legendTitle: 'Fractional Snow Cover',
+        thresholdOptions: [
+          { value: '1.0', label: 'All Snow (> 1%)' },
+          { value: '20.0', label: 'Partial+ (> 20%)' },
+          { value: '40.0', label: 'Moderate+ (> 40%)' },
+          { value: '60.0', label: 'Dense+ (> 60%)' },
+          { value: '80.0', label: 'Glacier Only (> 80%)' }
+        ],
+        colorScale: [
+          { min: 80.0, color: '#e0f2fe', label: 'Glacier / Heavy Snowpack', range: '80 – 100%' },
+          { min: 60.0, color: '#38bdf8', label: 'Dense Snow Cover', range: '60 – 80%' },
+          { min: 40.0, color: '#0284c7', label: 'Moderate Snow Cover', range: '40 – 60%' },
+          { min: 20.0, color: '#0369a1', label: 'Partial Snow', range: '20 – 40%' },
+          { min: 1.0,  color: '#0f766e', label: 'Trace Snow', range: '1 – 20%' }
+        ]
+      },
+      '3SIMG_L2G_AOD': {
+        productId: '3SIMG_L2G_AOD',
+        productName: 'Aerosol Optical Depth (AOD)',
+        category: 'environment',
+        unit: 'Optical Depth',
+        icon: '💨',
+        meta: 'ISRO SAC Ahmedabad • 3SIMG_L2G_AOD • 0.05° (~5 km) • Daytime 30-min',
+        defaultMinThreshold: 0.0,
+        standalonePath: 'aerosol/index.html',
+        legendTitle: 'Aerosol Optical Depth',
+        thresholdOptions: [
+          { value: '0.0', label: 'All (>= 0.0)' },
+          { value: '0.1', label: 'Light+ (> 0.1)' },
+          { value: '0.3', label: 'Moderate+ (> 0.3)' },
+          { value: '0.6', label: 'Poor Air+ (> 0.6)' },
+          { value: '1.0', label: 'Hazardous+ (> 1.0)' }
+        ],
+        colorScale: [
+          { min: 1.5, color: '#7f1d1d', label: 'Hazardous Dust / Extreme Haze', range: '> 1.5' },
+          { min: 1.0, color: '#dc2626', label: 'Very Heavy Aerosol Loading', range: '1.0 – 1.5' },
+          { min: 0.6, color: '#ea580c', label: 'Poor Air Quality / Smog', range: '0.6 – 1.0' },
+          { min: 0.3, color: '#eab308', label: 'Moderate Aerosol Burden', range: '0.3 – 0.6' },
+          { min: 0.1, color: '#16a34a', label: 'Clean Atmospheric Air', range: '0.1 – 0.3' },
+          { min: 0.0, color: '#0284c7', label: 'Pristine Atmosphere', range: '0.0 – 0.1' }
+        ]
+      }
+    };
+
+    function updateLegend(config) {
+      const titleText = document.getElementById('legendTitleText');
+      const unitText = document.getElementById('legendUnitText');
+      const itemsList = document.getElementById('legendItemsList');
+      if (titleText) titleText.textContent = config.legendTitle || config.productName;
+      if (unitText) unitText.textContent = config.unit ? `(${config.unit})` : '';
+      if (itemsList) {
+        itemsList.innerHTML = config.colorScale.map(step => `
+          <div class="legend-row">
+            <div class="color-swatch" style="background:${step.color};"></div>
+            <div class="legend-label">${step.range || step.min}</div>
+            <div class="legend-desc">${step.label}</div>
+          </div>
+        `).join('');
+      }
+    }
+
+    function updateThresholdSelect(config) {
+      const sel = document.getElementById('thresholdSelect');
+      if (!sel) return;
+      sel.innerHTML = config.thresholdOptions.map(opt => `
+        <option value="${opt.value}">${opt.label}</option>
+      `).join('');
+      sel.value = String(config.defaultMinThreshold);
+    }
+
+    function selectMapProduct(productId, btnEl) {
+      const config = PRODUCT_CONFIGS[productId];
+      if (!config) return;
+
+      document.querySelectorAll('.prod-switch-btn').forEach(b => b.classList.remove('active'));
+      if (btnEl) {
+        btnEl.classList.add('active');
+      } else {
+        const matchingBtn = document.querySelector(`.prod-switch-btn[data-pid="${productId}"]`);
+        if (matchingBtn) matchingBtn.classList.add('active');
+      }
+
+      const iconEl = document.getElementById('activeProductIcon');
+      if (iconEl) iconEl.textContent = config.icon;
+      const nameEl = document.getElementById('activeProductName');
+      if (nameEl) nameEl.textContent = config.productName;
+      const metaEl = document.getElementById('activeProductMeta');
+      if (metaEl) metaEl.textContent = config.meta;
+      const catBadge = document.getElementById('activeCategoryBadge');
+      if (catBadge) {
+        catBadge.className = `category-badge cat-${config.category}`;
+        catBadge.textContent = config.category;
+      }
+      const dedicatedBtn = document.getElementById('openDedicatedBtn');
+      if (dedicatedBtn) {
+        dedicatedBtn.href = config.standalonePath;
+      }
+
+      updateLegend(config);
+      updateThresholdSelect(config);
+
+      if (testMap) {
+        testMap.setProduct(config);
+        if (config.center) {
+          testMap.map.setView(config.center, config.zoom || 6);
+        } else {
+          testMap.map.setView([22.8, 82.5], 5);
+        }
+      }
+    }
+
+    function initTestMap() {
+      const initialConfig = PRODUCT_CONFIGS['3SIMG_L2B_HEM'];
+      updateLegend(initialConfig);
+      updateThresholdSelect(initialConfig);
+
+      testMap = new MosdacTestMap({
+        productId: initialConfig.productId,
+        productName: initialConfig.productName,
+        category: initialConfig.category,
+        unit: initialConfig.unit,
+        defaultMinThreshold: initialConfig.defaultMinThreshold,
+        mapElementId: 'map',
+        scrollWheelZoom: false,
+        colorScale: initialConfig.colorScale
+      });
+      window.testMap = testMap;
+
+      const mapEl = document.getElementById('map');
+      if (mapEl) {
+        mapEl.addEventListener('click', () => {
+          if (testMap && testMap.map && testMap.map.scrollWheelZoom) {
+            testMap.map.scrollWheelZoom.enable();
+          }
+        });
+        mapEl.addEventListener('mouseleave', () => {
+          if (testMap && testMap.map && testMap.map.scrollWheelZoom) {
+            testMap.map.scrollWheelZoom.disable();
+          }
+        });
+      }
+    }
+
+    async function loadCatalog() {
+      try {
+        const res = await fetch('http://127.0.0.1:8000/api/weather/mosdac/products');
+        if (res.ok) {
+          const data = await res.json();
+          allProducts = data.products || [];
+          renderProducts(allProducts);
+          return;
+        }
+      } catch (e) {
+        console.warn('Backend API offline, rendering built-in product registry:', e);
+      }
+
+      // Fallback: built-in product catalog definitions
+      allProducts = [
+        // Weather
+        {
+          product_id: '3SIMG_L2B_HEM',
+          name: 'Hydro-Estimator Rainfall Rate',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'mm/hr',
+          spatial_resolution: '0.04° (~4 km)',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'available',
+          test_map_path: 'rainfall/index.html',
+          render_type: 'Fluid Raster'
+        },
+        {
+          product_id: '3SIMG_L2G_IMR',
+          name: 'INSAT Multispectral Rainfall (IMR)',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'mm/hr',
+          spatial_resolution: '0.04° (~4 km)',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'available',
+          test_map_path: 'rainfall-imr/index.html',
+          render_type: 'Fluid Raster'
+        },
+        {
+          product_id: '3SIMG_L2B_CTP',
+          name: 'Cloud Top Properties (Pressure & Temp)',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'hPa & K',
+          spatial_resolution: '0.04° (~4 km)',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'available',
+          test_map_path: 'cloud/index.html',
+          render_type: 'Fluid Raster'
+        },
+        {
+          product_id: '3SIMG_L2B_UTH',
+          name: 'Upper Tropospheric Humidity',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: '%',
+          spatial_resolution: '0.04° (~4 km)',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'available',
+          test_map_path: 'humidity/index.html',
+          render_type: 'Fluid Raster'
+        },
+        {
+          product_id: '3SIMG_L2B_OLR',
+          name: 'Outgoing Longwave Radiation',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'W/m²',
+          spatial_resolution: '0.04° (~4 km)',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'available',
+          test_map_path: 'olr/index.html',
+          render_type: 'Fluid Raster'
+        },
+        {
+          product_id: '3SIMG_L2C_FOG',
+          name: 'Night & Day Fog Detection',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'Mask (0: Clear, 1: Fog)',
+          spatial_resolution: '1 km / 4 km',
+          temporal_frequency: '30 - 60 min',
+          operational_status: 'available',
+          test_map_path: 'fog/index.html',
+          render_type: 'Categorical Mask'
+        },
+        // Ocean
+        {
+          product_id: '3SIMG_L2B_SST',
+          name: 'Sea Surface Temperature',
+          category: 'ocean',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: '°C',
+          spatial_resolution: '0.04° (~4 km)',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'available',
+          test_map_path: 'sst/index.html',
+          render_type: 'Maritime Fluid Raster'
+        },
+        // Environment
+        {
+          product_id: '3SIMG_L2C_SNW',
+          name: 'Snow Cover & Fractional Snow (FSC)',
+          category: 'environment',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: '%',
+          spatial_resolution: '1 km projected',
+          temporal_frequency: 'Daily',
+          operational_status: 'available',
+          test_map_path: 'snow/index.html',
+          render_type: 'Himalayan Fluid'
+        },
+        {
+          product_id: '3SIMG_L2G_AOD',
+          name: 'Aerosol Optical Depth (650 nm)',
+          category: 'environment',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'Optical Thickness',
+          spatial_resolution: '0.05° (~5 km)',
+          temporal_frequency: 'Daytime 30-min',
+          operational_status: 'available',
+          test_map_path: 'aerosol/index.html',
+          render_type: 'Fluid Raster'
+        },
+        // Unavailable products (properly marked)
+        {
+          product_id: '3SIMG_L2B_CMV',
+          name: 'Cloud Motion Vector (Atmospheric Wind)',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'm/s',
+          spatial_resolution: 'Variable',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'unavailable',
+          unavailability_reason: 'Product ID not active in current OpenSearch catalog feed.',
+          test_map_path: 'cloud-motion/index.html'
+        },
+        {
+          product_id: '3SIMG_L2C_FIR',
+          name: 'Active Fire & Thermal Anomalies',
+          category: 'environment',
+          satellite: 'INSAT-3DS',
+          sensor: 'IMAGER',
+          unit: 'MW / Hotspots',
+          spatial_resolution: '1 km / 4 km',
+          temporal_frequency: 'Every 30 min',
+          operational_status: 'unavailable',
+          unavailability_reason: 'Fire thermal anomaly stream not published in catalog feed.',
+          test_map_path: 'fire/index.html'
+        },
+        {
+          product_id: '3SSND_L2B_ATD',
+          name: 'Atmospheric Temperature Profile',
+          category: 'weather',
+          satellite: 'INSAT-3DS',
+          sensor: 'SOUNDER',
+          unit: 'K',
+          spatial_resolution: '10 km',
+          temporal_frequency: 'Hourly',
+          operational_status: 'unavailable',
+          unavailability_reason: 'INSAT-3DS Sounder L2B feed unavailable via current catalog access.',
+          test_map_path: 'atmospheric-profile/index.html'
+        },
+        {
+          product_id: 'O3SCA_L2B_WND',
+          name: 'Oceansat-3 Ocean Surface Wind',
+          category: 'ocean',
+          satellite: 'Oceansat-3',
+          sensor: 'OSCAT',
+          unit: 'm/s & Deg',
+          spatial_resolution: '12.5 km',
+          temporal_frequency: 'Daily swaths',
+          operational_status: 'unavailable',
+          unavailability_reason: 'Scatterometer stream requires institutional access credentials.',
+          test_map_path: 'scatsat-wind/index.html'
+        }
+      ];
+
+      renderProducts(allProducts);
+    }
+
+    function renderProducts(products) {
+      const grid = document.getElementById('productsGrid');
+      grid.innerHTML = '';
+
+      products.forEach(p => {
+        const isAvail = (p.operational_status === 'available');
+        const hasLive = (p.has_live_data === true);
+        const card = document.createElement('div');
+        card.className = 'prod-card';
+
+        const catClass = p.category === 'weather' ? 'cat-weather' : (p.category === 'ocean' ? 'cat-ocean' : 'cat-environment');
+
+        let statusBadgeHtml = '';
+        if (hasLive) {
+          statusBadgeHtml = `<span class="status-badge badge-available">● Live Available</span>`;
+        } else if (isAvail) {
+          statusBadgeHtml = `<span class="status-badge" style="background:rgba(234,179,8,0.15); color:#facc15; border:1px solid rgba(234,179,8,0.3);">○ Feed Pending</span>`;
+        } else {
+          statusBadgeHtml = `<span class="status-badge badge-unavailable">○ Unavailable</span>`;
+        }
+
+        let mapLink = p.test_map_path || '#';
+        if (mapLink.startsWith('/test/')) {
+          mapLink = mapLink.replace('/test/', '');
+        }
+
+        card.innerHTML = `
+          <div>
+            <div class="prod-header">
+              <div class="prod-id">${p.product_id}</div>
+              <div class="prod-badges">
+                <span class="category-badge ${catClass}">${p.category}</span>
+                ${statusBadgeHtml}
+              </div>
+            </div>
+
+            <div class="prod-name">${p.name}</div>
+            <div class="prod-desc">${p.description || (isAvail ? 'Operational ISRO INSAT-3DS L2/L3 observation stream.' : p.unavailability_reason)}</div>
+
+            ${!isAvail && p.unavailability_reason ? `
+              <div class="unavailable-note">
+                ⚠️ <b>Upstream Note:</b> ${p.unavailability_reason}
+              </div>
+            ` : ''}
+
+            <div class="prod-meta-strip">
+              <div class="meta-row">
+                <span class="meta-label">Satellite / Sensor</span>
+                <span class="meta-val">${p.satellite} / ${p.sensor}</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Unit</span>
+                <span class="meta-val">${p.unit}</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Spatial Resolution</span>
+                <span class="meta-val">${p.spatial_resolution}</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Frequency</span>
+                <span class="meta-val">${p.temporal_frequency}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="prod-actions">
+            ${isAvail ? `
+              <button class="btn-sec" onclick="selectMapProduct('${p.product_id}'); document.getElementById('interactiveMapCard').scrollIntoView({behavior:'smooth'});" style="background:#0284c7; color:#fff; border-color:#38bdf8;" title="Display product in interactive test map above">
+                👁️ View Map
+              </button>
+              <a href="${mapLink}" class="btn-launch" target="_blank" title="Open dedicated standalone test map">
+                🗺️ Fullscreen
+              </a>
+              <button class="btn-sec" onclick="triggerBroadcast('${p.product_id}')" title="Broadcast test WebSocket event">
+                ⚡
+              </button>
+            ` : `
+              <a href="${mapLink}" class="btn-launch btn-disabled">
+                ⚠️ View Status Details
+              </a>
+            `}
+          </div>
+        `;
+
+        grid.appendChild(card);
+      });
+    }
+
+    function filterCategory(cat, btn) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      if (cat === 'all') {
+        renderProducts(allProducts);
+      } else {
+        const filtered = allProducts.filter(p => p.category.toLowerCase() === cat.toLowerCase());
+        renderProducts(filtered);
+      }
+    }
+
+    async function triggerBroadcast(productId) {
+      try {
+        const res = await fetch(`http://127.0.0.1:8000/api/weather/mosdac/products/${productId}/test-broadcast`, {
+          method: 'POST'
+        });
+        const data = await res.json();
+        alert(`⚡ WebSocket broadcast triggered for ${productId}!\nCheck the open test map.`);
+      } catch (e) {
+        alert(`Failed to trigger broadcast: ${e}`);
+      }
+    }
+
+    // Initialize interactive map and catalog
+    initTestMap();
+    loadCatalog();
+  </script>
+</body>
+</html>

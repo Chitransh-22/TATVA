@@ -6,6 +6,18 @@ from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.ingestion.pipeline import pipeline_service
 
+import socket
+from app.config import settings
+
+def is_live_db_reachable() -> bool:
+    try:
+        s = socket.create_connection((settings.POSTGRES_HOST, settings.POSTGRES_PORT), timeout=2.0)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+@pytest.mark.skipif(not is_live_db_reachable(), reason="Live Azure PostgreSQL database is not reachable from this network environment (Azure firewall)")
 @pytest.mark.asyncio
 async def test_live_map_api_end_to_end():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

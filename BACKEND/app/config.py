@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union, Any
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, model_validator
 
@@ -19,7 +19,59 @@ class Settings(BaseSettings):
     NASA_PPS_BASE_URL: str = "https://jsimpsonhttps.pps.eosdis.nasa.gov"
     NASA_OPENSEARCH_URL: str = "https://pmmpublisher.pps.eosdis.nasa.gov/opensearch"
     NASA_CMR_URL: str = "https://cmr.earthdata.nasa.gov/search/granules.json"
+    NASA_SSL_CA_BUNDLE: Optional[str] = None
     EXPLABS_API_KEY: str = ""
+
+    # ISRO MOSDAC Configuration (INSAT-3DS)
+    MOSDAC_USERNAME: str = "techy.tron321@gmail.com"
+    MOSDAC_PASSWORD: str = "@Aizen-Zoro-11"
+    MOSDAC_TOKEN_URL: str = "https://mosdac.gov.in/download_api/gettoken"
+    MOSDAC_SEARCH_URL: str = "https://mosdac.gov.in/apios/datasets.json"
+    MOSDAC_DOWNLOAD_URL: str = "https://mosdac.gov.in/download_api/download"
+    MOSDAC_DEFAULT_DATASET: str = "3SIMG_L2B_HEM"
+
+    # Active Weather Data Source (MOSDAC | NASA)
+    WEATHER_DATA_SOURCE: str = "MOSDAC"
+
+    # Pipeline Feature Toggles (Zero code deletion, environment-controlled NASA ingestion)
+    NASA_INGESTION_ENABLED: bool = False
+    MOSDAC_INGESTION_ENABLED: bool = True
+
+    # MOSDAC Modular Multi-Data Ingestion Platform Toggles
+    MOSDAC_PIPELINE_ENABLED: bool = True
+    MOSDAC_WEATHER_ENABLED: bool = True
+    MOSDAC_ENVIRONMENT_ENABLED: bool = True
+    MOSDAC_OCEAN_ENABLED: bool = True
+
+    # Weather Products
+    MOSDAC_RAINFALL_ENABLED: bool = True
+    MOSDAC_RAINFALL_IMR_ENABLED: bool = True
+    MOSDAC_CLOUD_ENABLED: bool = True
+    MOSDAC_HUMIDITY_ENABLED: bool = True
+    MOSDAC_OLR_ENABLED: bool = True
+    MOSDAC_FOG_ENABLED: bool = True
+    MOSDAC_CLOUD_MOTION_ENABLED: bool = False
+    MOSDAC_WATER_VAPOUR_ENABLED: bool = False
+    MOSDAC_TEMPERATURE_PROFILE_ENABLED: bool = False
+    MOSDAC_PRECIPITABLE_WATER_ENABLED: bool = False
+    MOSDAC_STABILITY_ENABLED: bool = False
+    MOSDAC_OZONE_ENABLED: bool = False
+
+    # Environment Products
+    MOSDAC_SNOW_ENABLED: bool = True
+    MOSDAC_AEROSOL_ENABLED: bool = True
+    MOSDAC_FIRE_ENABLED: bool = False
+    MOSDAC_SMOKE_ENABLED: bool = False
+
+    # Ocean Products
+    MOSDAC_SST_ENABLED: bool = True
+    MOSDAC_SCATSAT_WIND_ENABLED: bool = False
+    MOSDAC_CHLOROPHYLL_ENABLED: bool = False
+
+    # Retention Durations (Days)
+    MOSDAC_RETENTION_DAYS_WEATHER: int = 30
+    MOSDAC_RETENTION_DAYS_ENVIRONMENT: int = 90
+    MOSDAC_RETENTION_DAYS_OCEAN: int = 60
 
     # Kafka Configuration
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
@@ -67,6 +119,8 @@ class Settings(BaseSettings):
     DATA_EXTRACTED_DIR: Path = BACKEND_DIR / "data" / "extracted"
     DATA_TRANSFORMED_DIR: Path = BACKEND_DIR / "data" / "transformed"
     DATA_DLQ_DIR: Path = BACKEND_DIR / "data" / "dlq"
+    DATA_MOSDAC_RAW_DIR: Path = BACKEND_DIR / "data" / "mosdac" / "raw"
+    DATA_MOSDAC_TRANSFORMED_DIR: Path = BACKEND_DIR / "data" / "mosdac" / "transformed"
 
     # Scheduler Settings
     SCHEDULER_INTERVAL_MINUTES: int = 30
@@ -97,6 +151,45 @@ class Settings(BaseSettings):
         self.DATA_EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
         self.DATA_TRANSFORMED_DIR.mkdir(parents=True, exist_ok=True)
         self.DATA_DLQ_DIR.mkdir(parents=True, exist_ok=True)
+        self.DATA_MOSDAC_RAW_DIR.mkdir(parents=True, exist_ok=True)
+        self.DATA_MOSDAC_TRANSFORMED_DIR.mkdir(parents=True, exist_ok=True)
+        for domain in ("weather", "environment", "ocean"):
+            (self.DATA_MOSDAC_RAW_DIR / domain).mkdir(parents=True, exist_ok=True)
+            (self.DATA_MOSDAC_TRANSFORMED_DIR / domain).mkdir(parents=True, exist_ok=True)
+
+    def resolve_raw_path(self, raw_path: Optional[Any] = None, file_name: Optional[str] = None) -> Path:
+        """Dynamically resolve raw ZIP archive path to current DATA_RAW_DIR.
+
+        Safely rebases incoming paths from different developer machines or environments
+        onto the current project's DATA_RAW_DIR.
+        """
+        if raw_path:
+            p = Path(raw_path)
+            if p.is_file() and p.exists():
+                return p.resolve()
+            return (self.DATA_RAW_DIR / p.name).resolve()
+        if file_name:
+            return (self.DATA_RAW_DIR / file_name).resolve()
+        return self.DATA_RAW_DIR.resolve()
+
+    def get_nasa_ssl_verify(self) -> Union[str, bool]:
+        """Resolve SSL verification parameter for NASA HTTP requests.
+        
+        Supports custom CA certificates via NASA_SSL_CA_BUNDLE or standard env vars.
+        Defaults to True for strict certificate verification. Never disables verification globally.
+        """
+        if self.NASA_SSL_CA_BUNDLE:
+            p = Path(self.NASA_SSL_CA_BUNDLE)
+            if not p.is_absolute():
+                p = BACKEND_DIR / p
+            if p.exists():
+                return str(p.resolve())
+        # Check standard environment variables
+        for env_key in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE"):
+            val = os.getenv(env_key)
+            if val and Path(val).exists():
+                return val
+        return True
 
 
 settings = Settings()

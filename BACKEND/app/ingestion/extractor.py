@@ -26,9 +26,9 @@ class GranuleExtractor:
 
     def extract_zip(self, zip_path: str, granule_id: str) -> Optional[Dict[str, Path]]:
         """Extract ZIP archive safely into a granule directory and identify layer GeoTIFFs."""
-        zip_file = Path(zip_path)
+        zip_file = settings.resolve_raw_path(zip_path, file_name=f"{granule_id}.zip")
         if not zip_file.exists():
-            logger.error(f"ZIP file not found at {zip_path}")
+            logger.error(f"ZIP file not found at {zip_file}")
             return None
 
         target_dir = self.extract_base / granule_id

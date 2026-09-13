@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Search, MapPin, ChevronDown, Check } from 'lucide-react';
 import { INDIA_STATES_DATA } from '../data/weatherData';
+import { MosdacProductSelector } from './MosdacProductSelector';
 
 export function FiltersBar({
   searchQuery,
@@ -9,6 +10,9 @@ export function FiltersBar({
   onSelectState,
   regionFilter,
   onRegionChange,
+  activeProductId = '3SIMG_L2B_HEM',
+  onSelectProduct,
+  productStatusMap = {},
 }) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [showSearchResults, setShowSearchResults] = useState(false);
@@ -27,17 +31,18 @@ export function FiltersBar({
 
   return (
     <div className="w-full mb-6">
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      {/* Top Header Row: Titles & Search/Scope Controls */}
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
         {/* Left: Titles */}
         <div>
           <span className="text-xs font-bold uppercase tracking-widest text-blue-600">
-            ANALYSIS
+            ISRO MOSDAC PLATFORM
           </span>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight mt-0.5">
-            Weather Insights Across India
+            National Meteorological & Satellite Big Data
           </h2>
           <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-            Explore real-time and historical weather data, rainfall patterns, and district-wise insights.
+            Live geostationary observations from INSAT-3DS Imager & Sounder. Select any satellite product layer below.
           </p>
         </div>
 
@@ -61,11 +66,12 @@ export function FiltersBar({
               />
               {searchQuery && (
                 <button
+                  type="button"
                   onClick={() => {
                     onSearchChange('');
                     onSelectState(null);
                   }}
-                  className="absolute right-3 text-xs text-slate-400 hover:text-slate-600"
+                  className="absolute right-3 text-xs text-slate-400 hover:text-slate-600 cursor-pointer"
                 >
                   ✕
                 </button>
@@ -79,12 +85,13 @@ export function FiltersBar({
                   filteredStates.map((state) => (
                     <button
                       key={state.id}
+                      type="button"
                       onClick={() => {
                         onSelectState(state.name);
                         onSearchChange(state.name);
                         setShowSearchResults(false);
                       }}
-                      className="w-full text-left px-3.5 py-2 hover:bg-blue-50 flex items-center justify-between text-xs text-slate-700 transition-colors"
+                      className="w-full text-left px-3.5 py-2 hover:bg-blue-50 flex items-center justify-between text-xs text-slate-700 transition-colors cursor-pointer"
                     >
                       <span className="font-medium">{state.name}</span>
                       <span className="text-[11px] font-semibold text-blue-600">
@@ -105,8 +112,9 @@ export function FiltersBar({
           <div className="relative">
             <button
               id="region-filter-dropdown"
+              type="button"
               onClick={() => setDropdownOpen(!dropdownOpen)}
-              className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-white text-slate-700 text-xs sm:text-sm font-medium border border-slate-200 shadow-sm hover:bg-slate-50 transition-colors"
+              className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-white text-slate-700 text-xs sm:text-sm font-medium border border-slate-200 shadow-sm hover:bg-slate-50 transition-colors cursor-pointer"
             >
               <MapPin className="w-4 h-4 text-blue-600" />
               <span>
@@ -131,13 +139,14 @@ export function FiltersBar({
                 {regionOptions.map((opt) => (
                   <button
                     key={opt.id}
+                    type="button"
                     onClick={() => {
                       onRegionChange(opt.id);
                       onSelectState(null);
                       onSearchChange('');
                       setDropdownOpen(false);
                     }}
-                    className={`w-full text-left px-3.5 py-2 text-xs flex items-center justify-between hover:bg-blue-50 transition-colors ${
+                    className={`w-full text-left px-3.5 py-2 text-xs flex items-center justify-between hover:bg-blue-50 transition-colors cursor-pointer ${
                       regionFilter === opt.id && !selectedState
                         ? 'text-blue-600 font-semibold bg-blue-50/50'
                         : 'text-slate-700'
@@ -149,22 +158,18 @@ export function FiltersBar({
                     )}
                   </button>
                 ))}
-                {selectedState && (
-                  <button
-                    onClick={() => {
-                      onSelectState(null);
-                      setDropdownOpen(false);
-                    }}
-                    className="w-full text-left px-3.5 py-2 text-xs text-blue-600 hover:bg-blue-50 font-medium border-t border-slate-100"
-                  >
-                    Clear state selection (Reset to India)
-                  </button>
-                )}
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* MOSDAC Product Filter Bar */}
+      <MosdacProductSelector
+        activeProductId={activeProductId}
+        onSelectProduct={onSelectProduct}
+        productStatusMap={productStatusMap}
+      />
     </div>
   );
 }

@@ -28,7 +28,14 @@ export function Navbar({
 
       {/* Center Live Status & Timestamp Selector */}
       <div className="navbar-center">
-        <div className="live-pill" title="Live streaming from NASA IMERG & Azure PostGIS">
+        <div
+          className="live-pill"
+          title={`Live streaming from ${
+            metadata?.source === 'MOSDAC'
+              ? 'ISRO MOSDAC INSAT-3DS'
+              : (metadata?.source || 'ISRO MOSDAC INSAT-3DS')
+          } & Azure PostGIS`}
+        >
           <span className="live-dot" />
           <span className="live-tag">LIVE</span>
           <span className="live-sep">&bull;</span>

@@ -1,9 +1,11 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import asyncpg
-from app.config import settings
+from app.config import settings, BACKEND_DIR
 from app.database.migrations import run_migrations
 from app.ingestion.kafka_bus import kafka_bus
 from app.ingestion.pipeline import pipeline_service
@@ -12,6 +14,8 @@ from app.scheduler.scheduler_service import ingestion_scheduler
 from app.api.ws_manager import weather_ws_manager
 from app.api.weather import router as weather_router
 from app.api.ingestion import router as ingestion_router
+from app.api.mosdac import router as mosdac_router
+from app.ingestion.mosdac.pipeline import mosdac_pipeline
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +29,9 @@ logger = logging.getLogger("ritu")
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown lifecycle."""
     logger.info("Initializing RITU Weather Big Data Platform...")
+    logger.info(f"[Config] Raw data directory: {settings.DATA_RAW_DIR}")
+    logger.info(f"[Config] Extracted data directory: {settings.DATA_EXTRACTED_DIR}")
+    logger.info(f"[Config] Transformed data directory: {settings.DATA_TRANSFORMED_DIR}")
     
     # 1. Database migrations
     try:
@@ -44,6 +51,9 @@ async def lifespan(app: FastAPI):
 
     # 5. Start real-time WebSocket incremental broadcaster
     await weather_ws_manager.start()
+
+    # 6. Warm in-memory cache for available MOSDAC products in background
+    asyncio.create_task(mosdac_pipeline.warm_cache_for_all_available())
 
     logger.info("RITU Weather Big Data Platform is ready.")
     yield
@@ -75,6 +85,12 @@ app.add_middleware(
 # Include Routers
 app.include_router(weather_router, prefix="/api")
 app.include_router(ingestion_router, prefix="/api")
+app.include_router(mosdac_router, prefix="/api")
+
+# Mount standalone MOSDAC test center and test maps
+test_dir = BACKEND_DIR.parent / "test"
+if test_dir.exists():
+    app.mount("/test", StaticFiles(directory=str(test_dir), html=True), name="test")
 
 
 @app.get("/")
@@ -91,13 +107,17 @@ async def root():
 async def health_check():
     db_ok = False
     try:
+        import socket
+        s = socket.create_connection((settings.POSTGRES_HOST, settings.POSTGRES_PORT), timeout=0.8)
+        s.close()
+
         conn_kwargs = {
             "host": settings.POSTGRES_HOST,
             "port": settings.POSTGRES_PORT,
             "user": settings.POSTGRES_USER,
             "password": settings.POSTGRES_PASSWORD,
             "database": settings.POSTGRES_DB,
-            "timeout": 5.0,
+            "timeout": 2.0,
         }
         if settings.POSTGRES_SSL:
             conn_kwargs["ssl"] = settings.POSTGRES_SSL
