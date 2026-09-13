@@ -430,6 +430,7 @@
       zoomControl: true,
       preferCanvas: true
     });
+    window.map = map;
 
     // Dark Basemap suitable for vibrant weather layers
     const darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
@@ -441,9 +442,61 @@
     let layerOpacity = 0.85;
     let minThreshold = 0.1;
     let canvasLayer = null;
+    let boundaryGeoJson = null;
+
+    // Helper: Traces Survey of India boundary polygon onto 2D canvas context
+    function traceBoundaryPath(ctx, map, geoData) {
+      if (!geoData) return false;
+      ctx.beginPath();
+      let ringCount = 0;
+
+      const addPolygonRings = (polyCoords) => {
+        if (!Array.isArray(polyCoords)) return;
+        for (let r = 0; r < polyCoords.length; r++) {
+          const ring = polyCoords[r];
+          if (!Array.isArray(ring) || ring.length < 3) continue;
+          const first = map.latLngToContainerPoint([ring[0][1], ring[0][0]]);
+          ctx.moveTo(first.x, first.y);
+          for (let i = 1; i < ring.length; i++) {
+            const pt = map.latLngToContainerPoint([ring[i][1], ring[i][0]]);
+            ctx.lineTo(pt.x, pt.y);
+          }
+          ctx.closePath();
+          ringCount++;
+        }
+      };
+
+      const processGeom = (geom) => {
+        if (!geom || !geom.type) return;
+        if (geom.type === 'Polygon') {
+          addPolygonRings(geom.coordinates);
+        } else if (geom.type === 'MultiPolygon') {
+          if (Array.isArray(geom.coordinates)) {
+            for (let p = 0; p < geom.coordinates.length; p++) {
+              addPolygonRings(geom.coordinates[p]);
+            }
+          }
+        } else if (geom.type === 'GeometryCollection' && Array.isArray(geom.geometries)) {
+          for (const g of geom.geometries) processGeom(g);
+        }
+      };
+
+      if (geoData.type === 'FeatureCollection' && Array.isArray(geoData.features)) {
+        for (const f of geoData.features) {
+          if (f.geometry) processGeom(f.geometry);
+        }
+      } else if (geoData.type === 'Feature' && geoData.geometry) {
+        processGeom(geoData.geometry);
+      } else {
+        processGeom(geoData);
+      }
+
+      return ringCount > 0;
+    }
 
     // 2. Load Survey of India boundary GeoJSON (CORS-safe for file:/// protocol)
     function renderBoundary(geoData) {
+      boundaryGeoJson = geoData;
       L.geoJSON(geoData, {
         style: {
           color: '#1e3a8a',
@@ -453,6 +506,7 @@
           fillOpacity: 0.03
         }
       }).addTo(map);
+      if (canvasLayer) canvasLayer._draw();
     }
 
     if (window.INDIA_BOUNDARY) {
@@ -485,7 +539,7 @@
       return 'Very Light Rain';
     }
 
-    // 4. High Performance Canvas Renderer
+    // 4. High Performance Canvas Renderer with Official Survey of India Boundary Mask
     const CanvasRainOverlay = L.Layer.extend({
       onAdd: function(map) {
         this._map = map;
@@ -517,6 +571,10 @@
         if (!allPoints || allPoints.length === 0) return;
         const ctx = this._canvas.getContext('2d');
         ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+
+        // Defer drawing until boundary is ready to avoid unclipped visual flash
+        if (!boundaryGeoJson) return;
+
         ctx.globalAlpha = layerOpacity;
 
         const zoom = this._map.getZoom();
@@ -540,6 +598,19 @@
           ctx.beginPath();
           ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
           ctx.fill();
+        }
+
+        // Hardware mask to official Survey of India boundary
+        if (boundaryGeoJson) {
+          ctx.save();
+          ctx.globalAlpha = 1.0;
+          ctx.globalCompositeOperation = 'destination-in';
+          ctx.fillStyle = '#000000';
+          const hasPath = traceBoundaryPath(ctx, this._map, boundaryGeoJson);
+          if (hasPath) {
+            ctx.fill('evenodd');
+          }
+          ctx.restore();
         }
       }
     });

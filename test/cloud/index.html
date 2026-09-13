@@ -5,10 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ISRO INSAT-3DS Cloud Top Properties (CTP) &bull; Standalone Test Map</title>
   
-  <!-- Leaflet 1.9.4 -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- Local Leaflet 1.9.4 with CDN fallback -->
+  <link rel="stylesheet" href="../common/leaflet/leaflet.css" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';">
+  <script src="../common/leaflet/leaflet.js" onerror="this.onerror=null;this.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';"></script>
   
+  <!-- Authoritative Survey of India GeoJSON synchronous bundle -->
+  <script src="../common/india_boundary.js"></script>
+  <!-- Shared Offline / Standalone MOSDAC observations bundle -->
+  <script src="../common/mosdac_bundle.js"></script>
+
   <!-- Shared CSS & Test Harness -->
   <link rel="stylesheet" href="../common/map-styles.css">
   <script src="../common/test-harness.js"></script>
