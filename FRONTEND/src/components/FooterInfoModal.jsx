@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X, HelpCircle, Mail, MessageSquare, ShieldCheck, FileText, Eye, CheckCircle2, Send } from 'lucide-react';
 
 const MODAL_CONTENT = {
@@ -104,7 +105,9 @@ export function FooterInfoModal({ type, onClose }) {
     }, 2000);
   };
 
-  return (
+  if (!isOpen || typeof document === 'undefined') return null;
+
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -258,6 +261,7 @@ export function FooterInfoModal({ type, onClose }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -182,7 +182,7 @@ export function IndiaMapSection({
   return (
     <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       {/* REAL TATVA MAP CONTAINER (Left 7-8 cols on lg) */}
-      <div className="lg:col-span-7 xl:col-span-8 bg-[#e8f1fb] rounded-2xl p-3 sm:p-4 border border-[#cbe0f5] relative overflow-hidden shadow-sm flex flex-col justify-between select-none">
+      <div className="lg:col-span-7 xl:col-span-8 bg-[#e8f1fb] rounded-2xl p-3 sm:p-4 border border-[#cbe0f5] relative z-0 isolate overflow-hidden shadow-sm flex flex-col justify-between select-none">
         {/* Map Top Toolbar: Breadcrumbs + In-Map Product Selector + Controls Dropdown Toggle */}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3 z-20">
           {/* Breadcrumb Navigation Trail & In-Map Product Selector */}
@@ -271,7 +271,7 @@ export function IndiaMapSection({
         )}
 
         {/* REAL LEAFLET WEATHER MAP VIEWPORT */}
-        <div className="relative w-full h-[520px] sm:h-[560px] rounded-xl overflow-hidden border border-slate-200/90 shadow-inner bg-[#cbd5e1]">
+        <div className="relative z-0 isolate w-full h-[520px] sm:h-[560px] rounded-xl overflow-hidden border border-slate-200/90 shadow-inner bg-[#cbd5e1]">
           {/* Loading Overlay */}
           <LoadingOverlay isLoading={isLoading} message={loadingMsg} />
 
@@ -330,7 +330,7 @@ export function IndiaMapSection({
       </div>
 
       {/* OVERVIEW STATS & TELEMETRY (Right 4-5 cols on lg) */}
-      <div className="lg:col-span-5 xl:col-span-4 bg-[#f8fbff] rounded-2xl p-5 border border-slate-200/90 shadow-sm flex flex-col justify-between min-h-[580px]">
+      <div className="lg:col-span-5 xl:col-span-4 bg-[#f8fbff] rounded-2xl p-5 border border-slate-200/90 shadow-sm flex flex-col justify-between min-h-[580px] relative z-10">
         <div>
           {/* Header */}
           <div className="flex items-center justify-between mb-1">

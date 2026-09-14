@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, MapPin, X, ArrowRight, ShieldAlert, CloudRain } from 'lucide-react';
 import { INDIA_STATES_DATA } from '../data/weatherData';
 
@@ -107,9 +108,9 @@ export function AllStatesModal({
     );
   }, [search, statesList]);
 
-  if (!isOpen) return null;
+  if (!isOpen || typeof document === 'undefined') return null;
 
-  return (
+  return createPortal(
     <div
       id="all-states-modal"
       role="dialog"
@@ -248,6 +249,7 @@ export function AllStatesModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

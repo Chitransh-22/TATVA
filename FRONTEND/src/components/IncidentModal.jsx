@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, Send, CheckCircle2, MapPin, Camera, X } from 'lucide-react';
 import { INDIA_STATES_DATA } from '../data/weatherData';
 
@@ -12,6 +13,16 @@ export function IncidentModal({ isOpen, onClose }) {
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const fileInputRef = useRef(null);
+
+  // Close on Escape key press
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
   const handlePhotoSelect = (e) => {
     const file = e.target.files?.[0];
@@ -36,7 +47,7 @@ export function IncidentModal({ isOpen, onClose }) {
     };
   }, [photoPreview]);
 
-  if (!isOpen) return null;
+  if (!isOpen || typeof document === 'undefined') return null;
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -48,12 +59,22 @@ export function IncidentModal({ isOpen, onClose }) {
     }, 2200);
   };
 
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 relative animate-in fade-in zoom-in-95">
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="incident-modal-title"
+      className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 relative animate-in zoom-in-95 duration-150">
         <button
+          type="button"
           onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+          aria-label="Close"
+          className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer transition-colors"
         >
           <X className="w-5 h-5" />
         </button>
@@ -75,7 +96,7 @@ export function IncidentModal({ isOpen, onClose }) {
                 <AlertTriangle className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-slate-900">Report Weather Incident</h3>
+                <h3 id="incident-modal-title" className="text-lg font-bold text-slate-900">Report Weather Incident</h3>
                 <p className="text-xs text-slate-500">
                   Notify meteorological monitoring units of extreme localized conditions
                 </p>
@@ -248,6 +269,7 @@ export function IncidentModal({ isOpen, onClose }) {
           </form>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

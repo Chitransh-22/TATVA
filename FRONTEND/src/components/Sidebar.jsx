@@ -57,7 +57,7 @@ export function Sidebar({
   return (
     <>
       {/* Mobile Top Header (only on small screens) */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-[#081023]/95 backdrop-blur-md border-b border-blue-900/30 px-4 py-3 flex items-center justify-between">
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-[#081023]/95 backdrop-blur-md border-b border-blue-900/30 px-4 py-3 flex items-center justify-between">
         <button
           onClick={handleScrollToTop}
           className="flex items-center gap-2 cursor-pointer focus:outline-none"
