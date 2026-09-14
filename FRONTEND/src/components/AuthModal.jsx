@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { User, Lock, Mail, X, ShieldCheck } from 'lucide-react';
 import { TatvaLogo } from './TatvaLogo';
 
@@ -9,7 +10,17 @@ export function AuthModal({ isOpen, onClose }) {
   const [name, setName] = useState('');
   const [success, setSuccess] = useState(false);
 
-  if (!isOpen) return null;
+  // Close on Escape key press
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen || typeof document === 'undefined') return null;
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -20,12 +31,22 @@ export function AuthModal({ isOpen, onClose }) {
     }, 1500);
   };
 
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 select-none">
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="auth-modal-title"
+      className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 select-none animate-in fade-in duration-200"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div className="bg-[#091224] text-white rounded-2xl max-w-md w-full p-6 sm:p-8 shadow-2xl border border-blue-900/40 relative animate-in fade-in zoom-in-95">
         <button
+          type="button"
           onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+          aria-label="Close"
+          className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer transition-colors"
         >
           <X className="w-5 h-5" />
         </button>
@@ -33,7 +54,7 @@ export function AuthModal({ isOpen, onClose }) {
         {/* Brand Header */}
         <div className="flex flex-col items-center mb-6">
           <TatvaLogo size="sm" showText={true} />
-          <h3 className="text-xl font-bold tracking-tight mt-3">
+          <h3 id="auth-modal-title" className="text-xl font-bold tracking-tight mt-3">
             {isLogin ? 'Welcome to TATVA' : 'Create TATVA Account'}
           </h3>
           <p className="text-xs text-slate-400 mt-1 text-center">
@@ -124,6 +145,7 @@ export function AuthModal({ isOpen, onClose }) {
           </form>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
