@@ -10,6 +10,16 @@ export function Sidebar({
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  const handleScrollToTop = () => {
+    const hero = document.getElementById('hero-section');
+    if (hero) {
+      hero.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    document.documentElement.scrollTo({ top: 0, behavior: 'smooth' });
+    document.body.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const navItems = [
     {
       id: 'analysis',
@@ -48,9 +58,13 @@ export function Sidebar({
     <>
       {/* Mobile Top Header (only on small screens) */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-[#081023]/95 backdrop-blur-md border-b border-blue-900/30 px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <button
+          onClick={handleScrollToTop}
+          className="flex items-center gap-2 cursor-pointer focus:outline-none"
+          aria-label="Scroll to top"
+        >
           <TatvaLogo size="sm" showText={true} />
-        </div>
+        </button>
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           className="p-2 text-slate-200 hover:text-white rounded-lg bg-slate-800/60"
@@ -104,12 +118,14 @@ export function Sidebar({
         {/* Top: Logo & Main Navigation */}
         <div className="pt-8 px-4 flex flex-col">
           {/* Logo */}
-          <div
-            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-            className="cursor-pointer mb-8 pb-4 flex flex-col items-center hover:opacity-95 transition-opacity"
+          <button
+            id="sidebar-logo-btn"
+            onClick={handleScrollToTop}
+            aria-label="Scroll to top of TATVA platform"
+            className="cursor-pointer mb-8 pb-4 flex flex-col items-center hover:opacity-95 transition-opacity focus:outline-none"
           >
             <TatvaLogo size="md" showText={true} />
-          </div>
+          </button>
 
           {/* Navigation Items */}
           <nav className="flex flex-col gap-2.5">

@@ -24,16 +24,20 @@ RUN pip install --no-cache-dir --upgrade pip \
         sqlalchemy \
         asyncpg \
         psycopg2-binary \
+        aiosqlite \
         pandas \
         numpy \
+        h5py \
         rasterio \
+        pyproj \
         shapely \
         geopandas \
         requests \
         aiokafka \
         python-dotenv \
         pytest \
-        httpx
+        httpx \
+        tqdm
 
 # Copy application source
 COPY . /app/

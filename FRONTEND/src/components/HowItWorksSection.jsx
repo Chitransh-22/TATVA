@@ -32,6 +32,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { HOW_IT_WORKS_STEPS } from '../data/weatherData';
+import { StepGraphic } from './StepGraphic';
 
 // Map icon string names to Lucide icons
 const ICON_MAP = {
@@ -91,16 +92,10 @@ export function HowItWorksSection() {
       {/* Main Interactive Step Card */}
       <div className="relative bg-white/95 rounded-2xl border border-slate-200/90 shadow-sm p-5 sm:p-7 md:p-8">
         <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 items-center">
-          {/* Left: High-Tech Illustration Container */}
-          <div className="md:col-span-5 bg-gradient-to-br from-blue-50 to-indigo-50/60 rounded-2xl p-4 flex items-center justify-center overflow-hidden border border-blue-100/80 shadow-inner group">
-            <div className="relative w-full aspect-4/3 rounded-xl overflow-hidden shadow-sm">
-              <img
-                src={step.image}
-                alt={step.title}
-                className="w-full h-full object-cover object-center transform group-hover:scale-105 transition-transform duration-500"
-                referrerPolicy="no-referrer"
-              />
-              <div className="absolute inset-0 bg-blue-600/10 mix-blend-overlay pointer-events-none" />
+          {/* Left: High-Tech Dedicated Step Graphic Container */}
+          <div className="md:col-span-5 bg-gradient-to-br from-slate-900 to-blue-950 rounded-2xl p-3 flex items-center justify-center overflow-hidden border border-blue-900/30 shadow-md group">
+            <div className="relative w-full aspect-4/3 rounded-xl overflow-hidden shadow-inner flex items-center justify-center">
+              <StepGraphic stepNumber={step.stepNumber} />
             </div>
           </div>
 

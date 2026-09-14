@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import {
   Calendar,
   CloudRain,
@@ -17,6 +17,7 @@ import { WeatherMap } from './WeatherMap';
 import { Breadcrumbs } from './Breadcrumbs';
 import { LoadingOverlay } from './LoadingOverlay';
 import { MosdacProductSelector } from './MosdacProductSelector';
+import { AllStatesModal } from './AllStatesModal';
 import { getProductDefinition, DEFAULT_PRODUCT_ID } from '../data/mosdacProducts';
 
 export function IndiaMapSection({
@@ -49,6 +50,15 @@ export function IndiaMapSection({
 }) {
   const [showAllStatesModal, setShowAllStatesModal] = useState(false);
   const [showMapControls, setShowMapControls] = useState(false);
+
+  // Debounced Controls drawer toggle to prevent rapid double-click animation glitches
+  const lastControlsToggleRef = useRef(0);
+  const handleToggleControls = useCallback(() => {
+    const now = Date.now();
+    if (now - lastControlsToggleRef.current < 200) return;
+    lastControlsToggleRef.current = now;
+    setShowMapControls((prev) => !prev);
+  }, []);
 
   const productConfig = getProductDefinition(activeProductId);
   const summary = productData?.summary || {};
@@ -156,6 +166,19 @@ export function IndiaMapSection({
           category: s.category || 'Clear / Dry',
         }));
 
+  // Top districts list when a state is selected
+  const districtsList = stateData?.district_summaries && stateData.district_summaries.length > 0
+    ? [...stateData.district_summaries]
+        .sort((a, b) => Number(b?.max_precipitation ?? b?.avg_precipitation ?? 0) - Number(a?.max_precipitation ?? a?.avg_precipitation ?? 0))
+        .map((d, idx) => ({
+          rank: idx + 1,
+          id: d?.district_name || `dist-${idx}`,
+          name: d?.district_name || 'Unknown',
+          rainfall: Number(d?.max_precipitation ?? d?.avg_precipitation ?? 0),
+          category: d?.rain_category || 'Moderate Rain',
+        }))
+    : [];
+
   return (
     <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       {/* REAL TATVA MAP CONTAINER (Left 7-8 cols on lg) */}
@@ -184,7 +207,8 @@ export function IndiaMapSection({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowMapControls(!showMapControls)}
+              id="map-controls-toggle-btn"
+              onClick={handleToggleControls}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
                 showMapControls
                   ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
@@ -211,6 +235,7 @@ export function IndiaMapSection({
                 max="1.0"
                 step="0.05"
                 value={opacity}
+                onInput={(e) => onOpacityChange(parseFloat(e.target.value))}
                 onChange={(e) => onOpacityChange(parseFloat(e.target.value))}
                 className="w-24 accent-blue-600 cursor-pointer"
               />
@@ -427,41 +452,105 @@ export function IndiaMapSection({
               <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                 {selectedState ? `${selectedState} Districts` : 'Top Active Regions'}
               </span>
-              {!selectedState && (
+              {!selectedState ? (
                 <button
                   type="button"
+                  id="view-all-states-btn"
                   onClick={() => setShowAllStatesModal(true)}
                   className="text-xs text-blue-600 font-semibold hover:underline flex items-center gap-0.5 cursor-pointer"
                 >
                   View All <ArrowRight className="w-3 h-3" />
                 </button>
-              )}
+              ) : selectedDistrict ? (
+                <button
+                  type="button"
+                  onClick={onBackToState}
+                  className="text-[11px] text-blue-600 font-semibold hover:underline flex items-center gap-0.5 cursor-pointer"
+                >
+                  All Districts
+                </button>
+              ) : null}
             </div>
 
-            <div className="space-y-1.5">
-              {topStatesList.map((st) => (
-                <button
-                  key={st.id}
-                  type="button"
-                  onClick={() => onSelectState(st.name)}
-                  className="w-full flex items-center justify-between p-2 rounded-lg bg-white border border-slate-100 hover:border-blue-300 hover:bg-blue-50/40 transition-all text-left text-xs cursor-pointer"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="w-4 text-center font-bold text-slate-400 text-[11px]">
-                      {st.rank}
-                    </span>
-                    <span className="font-semibold text-slate-800">{st.name}</span>
+            <div className="space-y-1.5 max-h-64 overflow-y-auto pr-0.5">
+              {selectedState ? (
+                districtsList.length > 0 ? (
+                  districtsList.map((dist) => {
+                    const isDistrictSelected =
+                      selectedDistrict &&
+                      selectedDistrict.toLowerCase() === dist.name.toLowerCase();
+                    return (
+                      <button
+                        key={dist.id}
+                        type="button"
+                        onClick={() => onSelectDistrict(dist.name)}
+                        className={`w-full flex items-center justify-between p-2 rounded-lg border transition-all text-left text-xs cursor-pointer ${
+                          isDistrictSelected
+                            ? 'bg-blue-600 border-blue-600 text-white shadow-xs font-semibold'
+                            : 'bg-white border-slate-100 hover:border-blue-300 hover:bg-blue-50/40 text-slate-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0 pr-1">
+                          <span
+                            className={`w-4 text-center font-bold text-[11px] shrink-0 ${
+                              isDistrictSelected ? 'text-blue-100' : 'text-slate-400'
+                            }`}
+                          >
+                            {dist.rank}
+                          </span>
+                          <span className="font-semibold truncate">{dist.name}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span
+                            className={`font-bold ${
+                              isDistrictSelected ? 'text-white' : 'text-slate-700'
+                            }`}
+                          >
+                            {dist.rainfall.toFixed(1)} mm/h
+                          </span>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                              isDistrictSelected
+                                ? 'bg-white/20 text-white'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {dist.category}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="p-4 text-center text-xs text-slate-400 bg-white rounded-lg border border-slate-100">
+                    Loading district observations for {selectedState}...
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-slate-700">
-                      {st.rainfall.toFixed(1)} mm/h
-                    </span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-slate-100 text-slate-600">
-                      {st.category}
-                    </span>
-                  </div>
-                </button>
-              ))}
+                )
+              ) : (
+                topStatesList.map((st) => (
+                  <button
+                    key={st.id}
+                    type="button"
+                    onClick={() => onSelectState(st.name)}
+                    className="w-full flex items-center justify-between p-2 rounded-lg bg-white border border-slate-100 hover:border-blue-300 hover:bg-blue-50/40 transition-all text-left text-xs cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 pr-1">
+                      <span className="w-4 text-center font-bold text-slate-400 text-[11px] shrink-0">
+                        {st.rank}
+                      </span>
+                      <span className="font-semibold text-slate-800 truncate">{st.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-bold text-slate-700">
+                        {st.rainfall.toFixed(1)} mm/h
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-slate-100 text-slate-600">
+                        {st.category}
+                      </span>
+                    </div>
+                  </button>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -472,6 +561,15 @@ export function IndiaMapSection({
           <span className="font-semibold text-blue-600">TATVA 2026</span>
         </div>
       </div>
+
+      {/* All States & Union Territories Modal */}
+      <AllStatesModal
+        isOpen={showAllStatesModal}
+        onClose={() => setShowAllStatesModal(false)}
+        onSelectState={onSelectState}
+        selectedState={selectedState}
+        overviewData={overviewData}
+      />
     </div>
   );
 }

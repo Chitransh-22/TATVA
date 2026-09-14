@@ -1,6 +1,10 @@
+import { useState } from 'react';
 import { TatvaLogo } from './TatvaLogo';
+import { FooterInfoModal } from './FooterInfoModal';
 
 export function Footer({ onSelectNav, onOpenIncidentReport }) {
+  const [infoModalType, setInfoModalType] = useState(null);
+
   return (
     <footer className="w-full bg-[#070e20] text-slate-400 relative overflow-hidden select-none">
       {/* Top Wave Curve Edge */}
@@ -44,7 +48,7 @@ export function Footer({ onSelectNav, onOpenIncidentReport }) {
                     onSelectNav('analysis');
                     document.getElementById('analysis-section')?.scrollIntoView({ behavior: 'smooth' });
                   }}
-                  className="hover:text-blue-400 transition-colors"
+                  className="hover:text-blue-400 transition-colors cursor-pointer"
                 >
                   Analysis
                 </button>
@@ -52,7 +56,7 @@ export function Footer({ onSelectNav, onOpenIncidentReport }) {
               <li>
                 <button
                   onClick={onOpenIncidentReport}
-                  className="hover:text-blue-400 transition-colors"
+                  className="hover:text-blue-400 transition-colors cursor-pointer"
                 >
                   Incident Report
                 </button>
@@ -63,7 +67,7 @@ export function Footer({ onSelectNav, onOpenIncidentReport }) {
                     onSelectNav('how-it-works');
                     document.getElementById('how-it-works-section')?.scrollIntoView({ behavior: 'smooth' });
                   }}
-                  className="hover:text-blue-400 transition-colors"
+                  className="hover:text-blue-400 transition-colors cursor-pointer"
                 >
                   How It Works
                 </button>
@@ -78,19 +82,28 @@ export function Footer({ onSelectNav, onOpenIncidentReport }) {
             </h4>
             <ul className="space-y-2 text-xs">
               <li>
-                <a href="#faqs" className="hover:text-blue-400 transition-colors">
+                <button
+                  onClick={() => setInfoModalType('faqs')}
+                  className="hover:text-blue-400 transition-colors text-left cursor-pointer"
+                >
                   FAQs
-                </a>
+                </button>
               </li>
               <li>
-                <a href="#contact" className="hover:text-blue-400 transition-colors">
+                <button
+                  onClick={() => setInfoModalType('contact')}
+                  className="hover:text-blue-400 transition-colors text-left cursor-pointer"
+                >
                   Contact Us
-                </a>
+                </button>
               </li>
               <li>
-                <a href="#feedback" className="hover:text-blue-400 transition-colors">
+                <button
+                  onClick={() => setInfoModalType('feedback')}
+                  className="hover:text-blue-400 transition-colors text-left cursor-pointer"
+                >
                   Feedback
-                </a>
+                </button>
               </li>
             </ul>
           </div>
@@ -170,20 +183,34 @@ export function Footer({ onSelectNav, onOpenIncidentReport }) {
         <div className="pt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] text-slate-500">
           <div>© 2026 TATVA. All rights reserved.</div>
           <div className="flex items-center gap-4">
-            <a href="#privacy" className="hover:text-slate-300 transition-colors">
+            <button
+              onClick={() => setInfoModalType('privacy')}
+              className="hover:text-slate-300 transition-colors cursor-pointer"
+            >
               Privacy Policy
-            </a>
+            </button>
             <span>|</span>
-            <a href="#terms" className="hover:text-slate-300 transition-colors">
+            <button
+              onClick={() => setInfoModalType('terms')}
+              className="hover:text-slate-300 transition-colors cursor-pointer"
+            >
               Terms of Use
-            </a>
+            </button>
             <span>|</span>
-            <a href="#accessibility" className="hover:text-slate-300 transition-colors">
+            <button
+              onClick={() => setInfoModalType('accessibility')}
+              className="hover:text-slate-300 transition-colors cursor-pointer"
+            >
               Accessibility
-            </a>
+            </button>
           </div>
         </div>
       </div>
+
+      <FooterInfoModal
+        type={infoModalType}
+        onClose={() => setInfoModalType(null)}
+      />
     </footer>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { AlertTriangle, Send, CheckCircle2, MapPin, Camera, X } from 'lucide-react';
 import { INDIA_STATES_DATA } from '../data/weatherData';
 
@@ -9,6 +9,32 @@ export function IncidentModal({ isOpen, onClose }) {
   const [district, setDistrict] = useState('Chamoli');
   const [severity, setSeverity] = useState('severe');
   const [description, setDescription] = useState('');
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handlePhotoSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setPhotoFile(file);
+      const url = URL.createObjectURL(file);
+      setPhotoPreview(url);
+    }
+  };
+
+  const handleRemovePhoto = (e) => {
+    if (e) e.stopPropagation();
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+    setPhotoFile(null);
+    setPhotoPreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  useEffect(() => {
+    return () => {
+      if (photoPreview) URL.revokeObjectURL(photoPreview);
+    };
+  }, [photoPreview]);
 
   if (!isOpen) return null;
 
@@ -17,6 +43,7 @@ export function IncidentModal({ isOpen, onClose }) {
     setSubmitted(true);
     setTimeout(() => {
       setSubmitted(false);
+      handleRemovePhoto();
       onClose();
     }, 2200);
   };
@@ -145,14 +172,60 @@ export function IncidentModal({ isOpen, onClose }) {
                 />
               </div>
 
-              <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-100 flex items-center justify-between text-blue-700">
-                <div className="flex items-center gap-2">
-                  <Camera className="w-4 h-4" />
-                  <span>Attach Doppler photo / geotag</span>
-                </div>
-                <span className="text-[10px] uppercase font-bold text-blue-500">
-                  Optional
-                </span>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1 flex items-center justify-between">
+                  <span>Ground Photo / Radar Observation</span>
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Optional</span>
+                </label>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handlePhotoSelect}
+                  accept="image/*"
+                  className="hidden"
+                  id="incident-photo-upload"
+                />
+                {!photoPreview ? (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full p-4 border-2 border-dashed border-blue-200 hover:border-blue-400 hover:bg-blue-50/50 rounded-xl flex items-center justify-center gap-2.5 text-blue-600 transition-colors group cursor-pointer"
+                  >
+                    <Camera className="w-5 h-5 text-blue-500 group-hover:scale-110 transition-transform" />
+                    <span className="text-xs font-semibold">Click to upload photo or screenshot</span>
+                  </button>
+                ) : (
+                  <div className="relative rounded-xl overflow-hidden border border-blue-200 bg-slate-50 p-2 flex items-center gap-3">
+                    <img
+                      src={photoPreview}
+                      alt="Incident preview"
+                      className="w-16 h-16 object-cover rounded-lg border border-slate-200 shadow-sm"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-slate-800 truncate">
+                        {photoFile?.name || 'Uploaded photo'}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        {photoFile ? `${(photoFile.size / 1024).toFixed(1)} KB` : 'Ready to submit'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="text-[11px] text-blue-600 hover:text-blue-700 font-medium underline mt-1"
+                      >
+                        Change photo
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRemovePhoto}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                      title="Remove photo"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
