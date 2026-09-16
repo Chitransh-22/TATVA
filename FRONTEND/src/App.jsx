@@ -7,6 +7,7 @@ import { HowItWorksSection } from './components/HowItWorksSection';
 import { Footer } from './components/Footer';
 import { IncidentModal } from './components/IncidentModal';
 import { AuthModal } from './components/AuthModal';
+import { AnalysisPage } from './components/analysis/AnalysisPage';
 import { NATIONAL_METRICS } from './data/weatherData';
 import { weatherStore } from './data/weatherStore';
 import { useWeatherWebSocket } from './hooks/useWeatherWebSocket';
@@ -753,10 +754,10 @@ export function App() {
         {/* 1. Hero Section */}
         <HeroSection onExploreClick={handleExploreClick} />
 
-        {/* 2. Analysis Container: Filters + TATVA Real Map + Overview + How It Works */}
+        {/* 2. Analysis Workspace: TATVA Production Weather Intelligence Platform */}
         <div
           id="analysis-section"
-          className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 py-10 md:py-14"
+          className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12"
         >
           {error && (
             <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-center justify-between shadow-xs">
@@ -770,32 +771,9 @@ export function App() {
             </div>
           )}
 
-          {/* Filters & Search Header */}
-          <ErrorBoundary name="FiltersBar" title="Filters & Controls">
-            <FiltersBar
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              selectedState={selectedState}
-              onSelectState={handleSelectState}
-              regionFilter={regionFilter}
-              onRegionChange={setRegionFilter}
-              activeProductId={activeProductId}
-              onSelectProduct={handleSelectProduct}
-              productStatusMap={productStatusMap}
-            />
-          </ErrorBoundary>
-
-          {/* Map Section with embedded Real TATVA Map & Overview Stats Cards */}
-          <ErrorBoundary name="IndiaMapSection" title="Map & Weather Analytics" onReset={() => fetchOverview(selectedTime)}>
-            <IndiaMapSection
-              mapLevel={mapLevel}
-              metrics={NATIONAL_METRICS}
-              selectedState={selectedState}
-              selectedDistrict={selectedDistrict}
-              onSelectState={handleSelectState}
-              onSelectDistrict={handleSelectDistrict}
-              onFitIndia={handleSelectIndia}
-              onBackToState={handleBackToState}
+          {/* Full Production-Quality Weather Intelligence & Analytics Workspace */}
+          <ErrorBoundary name="AnalysisPage" title="Weather Intelligence & Analytics Workspace" onReset={() => fetchOverview(selectedTime)}>
+            <AnalysisPage
               overviewData={overviewData}
               stateData={stateData}
               districtData={districtData}
@@ -803,21 +781,28 @@ export function App() {
               loadingMsg={loadingMsg}
               opacity={opacity}
               onOpacityChange={setOpacity}
-              selectedTime={selectedTime}
-              onTimeChange={handleTimeChange}
-              metadata={metadata}
-              wsStatus={wsStatus}
-              wsTelemetry={wsTelemetry}
-              liveSummary={liveSummary}
-              activeSource={activeSource}
               activeProductId={activeProductId}
               onSelectProduct={handleSelectProduct}
               productData={productData}
               productStatusMap={productStatusMap}
+              metadata={metadata}
+              wsStatus={wsStatus}
+              wsTelemetry={wsTelemetry}
+              onSelectState={handleSelectState}
+              onSelectDistrict={handleSelectDistrict}
+              onFitIndia={handleSelectIndia}
+              onBackToState={handleBackToState}
+              selectedTime={selectedTime}
+              onTimeChange={handleTimeChange}
             />
           </ErrorBoundary>
+        </div>
 
-          {/* How It Works Section */}
+        {/* 3. How It Works Section */}
+        <div
+          id="how-it-works-section"
+          className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 pb-10"
+        >
           <ErrorBoundary name="HowItWorksSection" title="Platform Information">
             <HowItWorksSection />
           </ErrorBoundary>
