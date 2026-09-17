@@ -97,7 +97,6 @@ class AnalyticsAggregator:
                     o.observation_time = :obs_time
                     AND o.latitude BETWEEN s.min_lat AND s.max_lat
                     AND o.longitude BETWEEN s.min_lon AND s.max_lon
-                    AND ST_Intersects(o.geom, s.geom)
                 GROUP BY s.state_name
                 ON CONFLICT (observation_time, region_type, region_name, state_name) DO UPDATE
                 SET avg_precipitation = EXCLUDED.avg_precipitation,

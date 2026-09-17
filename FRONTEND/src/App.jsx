@@ -15,8 +15,41 @@ import { getProductDefinition, DEFAULT_PRODUCT_ID } from './data/mosdacProducts'
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './App.css';
 
+function getInitialRoute() {
+  if (typeof window === 'undefined') return '/';
+  const path = window.location.pathname.toLowerCase();
+  if (path === '/analysis' || path.startsWith('/analysis/')) {
+    return '/analysis';
+  }
+  return '/';
+}
+
 export function App() {
-  // Single Source of Truth for Map Navigation State
+  // Client-Side Routing State: '/' for Home, '/analysis' for dedicated Analysis page
+  const [currentRoute, setCurrentRoute] = useState(getInitialRoute);
+
+  const navigateTo = useCallback((toPath) => {
+    if (toPath === currentRoute) return;
+    window.history.pushState({}, '', toPath);
+    setCurrentRoute(toPath);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [currentRoute]);
+
+  // Browser Back/Forward navigation listener
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname.toLowerCase();
+      if (path === '/analysis' || path.startsWith('/analysis/')) {
+        setCurrentRoute('/analysis');
+      } else {
+        setCurrentRoute('/');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Single Source of Truth for Location & Map Navigation State
   const [navState, setNavState] = useState({
     mapLevel: 'india', // 'india' | 'state' | 'district'
     selectedState: null,
@@ -41,6 +74,10 @@ export function App() {
     if (districtAbortRef.current) {
       districtAbortRef.current.abort();
       districtAbortRef.current = null;
+    }
+    if (historicalAbortRef.current) {
+      historicalAbortRef.current.abort();
+      historicalAbortRef.current = null;
     }
   }, []);
 
@@ -103,7 +140,9 @@ export function App() {
   const [overviewData, setOverviewData] = useState(null);
   const [stateData, setStateData] = useState(null);
   const [districtData, setDistrictData] = useState(null);
-  const [, setHistoricalTimeline] = useState([]);
+  const [historicalTimeline, setHistoricalTimeline] = useState([]);
+  const [isHistoricalLoading, setIsHistoricalLoading] = useState(false);
+  const [historicalError, setHistoricalError] = useState(null);
 
   // UI Control State
   const [isLoading, setIsLoading] = useState(true);
@@ -120,6 +159,8 @@ export function App() {
   const overviewAbortRef = useRef(null);
   const stateAbortRef = useRef(null);
   const districtAbortRef = useRef(null);
+  const historicalAbortRef = useRef(null);
+  const historicalRequestIdRef = useRef(0);
 
   // Ref to track latest selection for SSE live updates
   const selectionRef = useRef({ mapLevel, selectedState, selectedDistrict, selectedTime });
@@ -148,17 +189,60 @@ export function App() {
   }, []);
 
   const fetchHistorical = useCallback(async (stName, distName) => {
+    const requestId = ++historicalRequestIdRef.current;
+    if (historicalAbortRef.current) {
+      historicalAbortRef.current.abort();
+      historicalAbortRef.current = null;
+    }
+
+    const controller = new AbortController();
+    historicalAbortRef.current = controller;
+    setIsHistoricalLoading(true);
+    setHistoricalError(null);
+
     try {
-      let url = '/api/weather/historical-series?limit=12';
+      let url = '/api/weather/historical-series?limit=24';
       if (distName) url += `&district_name=${encodeURIComponent(distName)}`;
       else if (stName) url += `&state_name=${encodeURIComponent(stName)}`;
 
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setHistoricalTimeline(data.timeline || []);
+
+      // Guard: Cancel / Ignore stale async response
+      if (requestId !== historicalRequestIdRef.current) return;
+
+      const rawTimeline = Array.isArray(data.timeline) ? data.timeline : [];
+      const validatedTimeline = rawTimeline
+        .filter((item) => item && (item.observation_time || item.observation_ist))
+        .map((item) => {
+          const avgP = Number(item.avg_precipitation);
+          const maxP = Number(item.max_precipitation);
+          const minP = Number(item.min_precipitation);
+          const pts = Number(item.total_points);
+
+          return {
+            observation_time: item.observation_time,
+            observation_ist: item.observation_ist || '',
+            avg_precipitation: isFinite(avgP) ? avgP : 0.0,
+            max_precipitation: isFinite(maxP) ? maxP : 0.0,
+            min_precipitation: isFinite(minP) ? minP : 0.0,
+            total_points: isFinite(pts) ? Math.round(pts) : 0,
+            rain_category: item.rain_category || 'Clear / Dry',
+          };
+        })
+        .sort((a, b) => new Date(a.observation_time).getTime() - new Date(b.observation_time).getTime());
+
+      setHistoricalTimeline(validatedTimeline);
     } catch (err) {
+      if (err.name === 'AbortError') return;
+      if (requestId !== historicalRequestIdRef.current) return;
       console.warn('Historical series fetch warning:', err.message);
+      setHistoricalError('Unable to load precipitation history.');
+    } finally {
+      if (requestId === historicalRequestIdRef.current) {
+        setIsHistoricalLoading(false);
+      }
     }
   }, []);
 
@@ -609,12 +693,13 @@ export function App() {
   // =========================================================================
 
   useEffect(() => {
-    // Parallel initial load: metadata, product catalog, initial overview, and active product data
+    // Parallel initial load: metadata, product catalog, initial overview, historical series, and active product data
     fetchMetadata();
     fetchProductCatalog();
     fetchOverview();
+    fetchHistorical(null, null);
     fetchProductData('3SIMG_L2B_HEM');
-  }, [fetchMetadata, fetchProductCatalog, fetchOverview, fetchProductData]);
+  }, [fetchMetadata, fetchProductCatalog, fetchOverview, fetchHistorical, fetchProductData]);
 
   // =========================================================================
   // Background Metadata Freshness Poll (Telemetry status)
@@ -638,17 +723,14 @@ export function App() {
   useEffect(() => {
     const handleScroll = () => {
       const howItWorksEl = document.getElementById('how-it-works-section');
-      const analysisEl = document.getElementById('analysis-section');
-      const heroEl = document.getElementById('hero-section');
+      const mapEl = document.getElementById('map-section');
 
       const scrollPosition = window.scrollY + 200;
 
       if (howItWorksEl && scrollPosition >= howItWorksEl.offsetTop) {
         setActiveTab('how-it-works');
-      } else if (analysisEl && scrollPosition >= analysisEl.offsetTop) {
-        setActiveTab('analysis');
-      } else if (heroEl) {
-        setActiveTab('analysis');
+      } else if (mapEl && scrollPosition >= mapEl.offsetTop) {
+        setActiveTab('home');
       }
     };
 
@@ -671,7 +753,8 @@ export function App() {
     setLiveSummary(null);
     weatherStore.clearScope({ state: null, district: null });
     fetchOverview(selectedTime);
-  }, [fetchOverview, selectedTime]);
+    fetchHistorical(null, null);
+  }, [fetchHistorical, fetchOverview, selectedTime]);
 
   const handleSelectState = useCallback((stateName) => {
     if (!stateName) {
@@ -687,20 +770,8 @@ export function App() {
     setLiveSummary(null);
     weatherStore.clearScope({ state: stateName, district: null });
     fetchState(stateName, selectedTime);
-  }, [fetchState, handleSelectIndia, selectedTime]);
-
-  const handleSelectDistrict = useCallback((districtName) => {
-    const curState = selectionRef.current.selectedState;
-    if (!curState || !districtName) return;
-    setNavState({
-      mapLevel: 'district',
-      selectedState: curState,
-      selectedDistrict: districtName,
-    });
-    setLiveSummary(null);
-    weatherStore.clearScope({ state: curState, district: districtName });
-    fetchDistrict(curState, districtName, selectedTime);
-  }, [fetchDistrict, selectedTime]);
+    fetchHistorical(stateName, null);
+  }, [fetchHistorical, fetchState, handleSelectIndia, selectedTime]);
 
   const handleBackToState = useCallback(() => {
     const curState = selectionRef.current.selectedState;
@@ -714,7 +785,26 @@ export function App() {
     setLiveSummary(null);
     weatherStore.clearScope({ state: curState, district: null });
     fetchState(curState, selectedTime);
-  }, [fetchState, selectedTime]);
+    fetchHistorical(curState, null);
+  }, [fetchHistorical, fetchState, selectedTime]);
+
+  const handleSelectDistrict = useCallback((districtName) => {
+    const curState = selectionRef.current.selectedState;
+    if (!curState) return;
+    if (!districtName) {
+      handleBackToState();
+      return;
+    }
+    setNavState({
+      mapLevel: 'district',
+      selectedState: curState,
+      selectedDistrict: districtName,
+    });
+    setLiveSummary(null);
+    weatherStore.clearScope({ state: curState, district: districtName });
+    fetchDistrict(curState, districtName, selectedTime);
+    fetchHistorical(curState, districtName);
+  }, [fetchDistrict, fetchHistorical, handleBackToState, selectedTime]);
 
   const handleTimeChange = useCallback((time) => {
     setSelectedTime(time);
@@ -723,20 +813,20 @@ export function App() {
     if (curLevel === 'district' && curDt && curSt) {
       weatherStore.clearScope({ state: curSt, district: curDt });
       fetchDistrict(curSt, curDt, time);
+      fetchHistorical(curSt, curDt);
     } else if (curLevel === 'state' && curSt) {
       weatherStore.clearScope({ state: curSt, district: null });
       fetchState(curSt, time);
+      fetchHistorical(curSt, null);
     } else {
       weatherStore.clearScope({ state: null, district: null });
       fetchOverview(time);
+      fetchHistorical(null, null);
     }
-  }, [fetchDistrict, fetchOverview, fetchState]);
+  }, [fetchDistrict, fetchHistorical, fetchOverview, fetchState]);
 
   const handleExploreClick = () => {
-    const analysisEl = document.getElementById('analysis-section');
-    if (analysisEl) {
-      analysisEl.scrollIntoView({ behavior: 'smooth' });
-    }
+    navigateTo('/analysis');
   };
 
   return (
@@ -747,71 +837,153 @@ export function App() {
         onSelectTab={setActiveTab}
         onOpenIncidentReport={() => setIsIncidentModalOpen(true)}
         onOpenAuthModal={() => setIsAuthModalOpen(true)}
+        currentRoute={currentRoute}
+        onNavigate={navigateTo}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 min-w-0 flex flex-col pt-[58px] lg:pt-0">
-        {/* 1. Hero Section */}
-        <HeroSection onExploreClick={handleExploreClick} />
-
-        {/* 2. Analysis Workspace: TATVA Production Weather Intelligence Platform */}
-        <div
-          id="analysis-section"
-          className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12"
-        >
-          {error && (
-            <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-center justify-between shadow-xs">
-              <span>⚠️ {error}</span>
-              <button
-                onClick={() => fetchOverview(selectedTime)}
-                className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg text-xs transition-colors cursor-pointer"
-              >
-                Retry
-              </button>
-            </div>
-          )}
-
-          {/* Full Production-Quality Weather Intelligence & Analytics Workspace */}
-          <ErrorBoundary name="AnalysisPage" title="Weather Intelligence & Analytics Workspace" onReset={() => fetchOverview(selectedTime)}>
+        {currentRoute === '/analysis' ? (
+          /* =========================================================
+             DEDICATED SEPARATE /analysis ROUTE
+             ========================================================= */
+          <ErrorBoundary
+            name="AnalysisPage"
+            title="Weather Intelligence & Analytics Workspace"
+            onReset={() => {
+              if (selectedDistrict && selectedState) {
+                fetchDistrict(selectedState, selectedDistrict, selectedTime);
+                fetchHistorical(selectedState, selectedDistrict);
+              } else if (selectedState) {
+                fetchState(selectedState, selectedTime);
+                fetchHistorical(selectedState, null);
+              } else {
+                fetchOverview(selectedTime);
+                fetchHistorical(null, null);
+              }
+            }}
+          >
             <AnalysisPage
-              overviewData={overviewData}
-              stateData={stateData}
-              districtData={districtData}
-              isLoading={isLoading}
-              loadingMsg={loadingMsg}
-              opacity={opacity}
-              onOpacityChange={setOpacity}
-              activeProductId={activeProductId}
-              onSelectProduct={handleSelectProduct}
-              productData={productData}
-              productStatusMap={productStatusMap}
-              metadata={metadata}
-              wsStatus={wsStatus}
-              wsTelemetry={wsTelemetry}
+              selectedState={selectedState}
+              selectedDistrict={selectedDistrict}
               onSelectState={handleSelectState}
               onSelectDistrict={handleSelectDistrict}
               onFitIndia={handleSelectIndia}
-              onBackToState={handleBackToState}
               selectedTime={selectedTime}
               onTimeChange={handleTimeChange}
+              overviewData={overviewData}
+              stateData={stateData}
+              districtData={districtData}
+              historicalTimeline={historicalTimeline}
+              isLoading={isLoading}
+              isHistoricalLoading={isHistoricalLoading}
+              error={error || historicalError}
+              metadata={metadata}
+              onRetry={() => {
+                if (selectedDistrict && selectedState) {
+                  fetchDistrict(selectedState, selectedDistrict, selectedTime);
+                  fetchHistorical(selectedState, selectedDistrict);
+                } else if (selectedState) {
+                  fetchState(selectedState, selectedTime);
+                  fetchHistorical(selectedState, null);
+                } else {
+                  fetchOverview(selectedTime);
+                  fetchHistorical(null, null);
+                }
+              }}
             />
           </ErrorBoundary>
-        </div>
+        ) : (
+          /* =========================================================
+             LANDING HOME PAGE (Hero, Filters, Interactive Map, How It Works)
+             Analysis is NOT embedded here!
+             ========================================================= */
+          <>
+            {/* 1. Hero Section */}
+            <HeroSection onExploreClick={handleExploreClick} />
 
-        {/* 3. How It Works Section */}
-        <div
-          id="how-it-works-section"
-          className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 pb-10"
-        >
-          <ErrorBoundary name="HowItWorksSection" title="Platform Information">
-            <HowItWorksSection />
-          </ErrorBoundary>
-        </div>
+            {/* 2. Interactive Map Container: FiltersBar + Real TATVA Map */}
+            <div
+              id="map-section"
+              className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 py-10 md:py-14"
+            >
+              {error && (
+                <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-center justify-between shadow-xs">
+                  <span>⚠️ {error}</span>
+                  <button
+                    onClick={() => fetchOverview(selectedTime)}
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg text-xs transition-colors cursor-pointer"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
 
-        {/* 3. Footer Section */}
+              {/* Filters & Search Header */}
+              <ErrorBoundary name="FiltersBar" title="Filters & Controls">
+                <FiltersBar
+                  searchQuery={searchQuery}
+                  onSearchChange={setSearchQuery}
+                  selectedState={selectedState}
+                  onSelectState={handleSelectState}
+                  regionFilter={regionFilter}
+                  onRegionChange={setRegionFilter}
+                  activeProductId={activeProductId}
+                  onSelectProduct={handleSelectProduct}
+                  productStatusMap={productStatusMap}
+                />
+              </ErrorBoundary>
+
+              {/* Map Section with embedded Real TATVA Map & Overview Stats Cards */}
+              <ErrorBoundary name="IndiaMapSection" title="Map & Weather Analytics" onReset={() => fetchOverview(selectedTime)}>
+                <IndiaMapSection
+                  mapLevel={mapLevel}
+                  metrics={NATIONAL_METRICS}
+                  selectedState={selectedState}
+                  selectedDistrict={selectedDistrict}
+                  onSelectState={handleSelectState}
+                  onSelectDistrict={handleSelectDistrict}
+                  onFitIndia={handleSelectIndia}
+                  onBackToState={handleBackToState}
+                  overviewData={overviewData}
+                  stateData={stateData}
+                  districtData={districtData}
+                  isLoading={isLoading}
+                  loadingMsg={loadingMsg}
+                  opacity={opacity}
+                  onOpacityChange={setOpacity}
+                  selectedTime={selectedTime}
+                  onTimeChange={handleTimeChange}
+                  metadata={metadata}
+                  wsStatus={wsStatus}
+                  wsTelemetry={wsTelemetry}
+                  liveSummary={liveSummary}
+                  activeSource={activeSource}
+                  activeProductId={activeProductId}
+                  onSelectProduct={handleSelectProduct}
+                  productData={productData}
+                  productStatusMap={productStatusMap}
+                />
+              </ErrorBoundary>
+            </div>
+
+            {/* 3. How It Works Section */}
+            <div
+              id="how-it-works-section"
+              className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 pb-10"
+            >
+              <ErrorBoundary name="HowItWorksSection" title="Platform Information">
+                <HowItWorksSection />
+              </ErrorBoundary>
+            </div>
+          </>
+        )}
+
+        {/* Footer Section */}
         <Footer
           onSelectNav={setActiveTab}
           onOpenIncidentReport={() => setIsIncidentModalOpen(true)}
+          onNavigate={navigateTo}
         />
       </main>
 

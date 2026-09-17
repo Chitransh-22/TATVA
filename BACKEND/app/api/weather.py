@@ -276,11 +276,7 @@ async def get_weather_metadata(
         active_source = (source or getattr(settings, "WEATHER_DATA_SOURCE", "MOSDAC")).upper()
 
         if active_source == "MOSDAC":
-            # 1. Authoritative latest active observation time for MOSDAC
-            active_time_res = await db.execute(text("SELECT MAX(observation_time) FROM precipitation_observations WHERE source = 'MOSDAC';"))
-            active_latest = active_time_res.scalar_one_or_none()
-
-            # 2. Available distinct observation timestamps from ingestion_ledger (COMPLETED status)
+            # 1. Available distinct observation timestamps from ingestion_ledger (COMPLETED status)
             times_res = await db.execute(text("""
                 SELECT observation_time, granule_id, row_count
                 FROM ingestion_ledger
@@ -290,10 +286,14 @@ async def get_weather_metadata(
                 LIMIT 20;
             """))
             ledger_completed = times_res.fetchall()
+            active_latest = ledger_completed[0].observation_time if ledger_completed else None
 
-            # 3. Total points recorded for MOSDAC
+            # 2. Total points recorded across completed MOSDAC granules
             total_all_res = await db.execute(text("""
-                SELECT COUNT(*) FROM precipitation_observations WHERE source = 'MOSDAC';
+                SELECT COALESCE(SUM(row_count), 0)
+                FROM ingestion_ledger
+                WHERE status IN ('COMPLETED', 'PERSISTED')
+                  AND (granule_id LIKE '3SIMG%' OR raw_file_path LIKE '%mosdac%');
             """))
             total_all = int(total_all_res.scalar_one_or_none() or 0)
 
@@ -473,83 +473,25 @@ async def get_india_overview(
 
         # Resolve target observation time: explicit parameter or latest available granule
         target_dt = _parse_iso_time(observation_time)
-
-        # 1. National Summary for target timestamp
-        if target_dt:
+        if not target_dt:
             if active_source == "MOSDAC":
-                nat_calc = await db.execute(text("""
-                    SELECT
-                        ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
-                        ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
-                        ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
-                        COUNT(*) as pt_count,
-                        COALESCE(MAX(granule_id), '3SIMG_MOSDAC') as gid,
-                        MAX(observation_time) as latest_time
-                    FROM precipitation_observations
-                    WHERE observation_time = :obs_time
-                      AND source = 'MOSDAC'
-                      AND precipitation >= 0
-                      AND precipitation < 29990;
-                """), {"obs_time": target_dt})
-            else:
-                nat_calc = await db.execute(text("""
-                    SELECT
-                        ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
-                        ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
-                        ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
-                        COUNT(*) as pt_count,
-                        COALESCE(MAX(granule_id), 'IMERG') as gid,
-                        MAX(observation_time) as latest_time
-                    FROM precipitation_observations
-                    WHERE observation_time = :obs_time
-                      AND (granule_id LIKE '%.30min%' OR granule_id NOT LIKE '%.%day%')
-                      AND precipitation >= 0
-                      AND precipitation < 29990;
-                """), {"obs_time": target_dt})
-        else:
-            if active_source == "MOSDAC":
-                nat_calc = await db.execute(text("""
-                    SELECT
-                        ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
-                        ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
-                        ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
-                        COUNT(*) as pt_count,
-                        COALESCE(MAX(granule_id), '3SIMG_MOSDAC') as gid,
-                        MAX(observation_time) as latest_time
-                    FROM precipitation_observations
-                    WHERE source = 'MOSDAC'
-                      AND precipitation >= 0
-                      AND precipitation < 29990
-                      AND observation_time = (
-                          SELECT MAX(observation_time) FROM precipitation_observations
-                          WHERE source = 'MOSDAC'
-                      );
+                t_res = await db.execute(text("""
+                    SELECT observation_time FROM ingestion_ledger
+                    WHERE status IN ('COMPLETED', 'PERSISTED')
+                      AND (granule_id LIKE '3SIMG%' OR raw_file_path LIKE '%mosdac%')
+                    ORDER BY observation_time DESC
+                    LIMIT 1;
                 """))
+                target_dt = t_res.scalar_one_or_none()
             else:
-                nat_calc = await db.execute(text("""
-                    SELECT
-                        ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
-                        ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
-                        ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
-                        COUNT(*) as pt_count,
-                        COALESCE(MAX(granule_id), 'IMERG') as gid,
-                        MAX(observation_time) as latest_time
-                    FROM precipitation_observations
-                    WHERE (granule_id LIKE '%.30min%' OR granule_id NOT LIKE '%.%day%')
-                      AND precipitation >= 0
-                      AND precipitation < 29990
-                      AND observation_time = (
-                          SELECT observation_time FROM ingestion_ledger
-                          WHERE status IN ('COMPLETED', 'PERSISTED')
-                            AND granule_id LIKE '%.30min%'
-                          ORDER BY observation_time DESC
-                          LIMIT 1
-                      );
+                t_res = await db.execute(text("""
+                    SELECT observation_time FROM ingestion_ledger
+                    WHERE status IN ('COMPLETED', 'PERSISTED')
+                      AND granule_id LIKE '%.30min%'
+                    ORDER BY observation_time DESC
+                    LIMIT 1;
                 """))
-
-        c = nat_calc.first()
-        if not target_dt and c:
-            target_dt = getattr(c, "latest_time", None)
+                target_dt = t_res.scalar_one_or_none()
 
         if not target_dt:
             return {
@@ -571,9 +513,44 @@ async def get_india_overview(
                 "observations": [],
             }
 
-        cache_key = f"overview_{target_dt.isoformat()}_{grid_step}"
+        # Check in-memory cache before running heavy database queries
+        cache_key = f"overview_{active_source}_{target_dt.isoformat()}_{grid_step}"
         if cache_key in _CACHE_OVERVIEW:
             return _CACHE_OVERVIEW[cache_key]
+
+        # 1. National Summary for target timestamp
+        if active_source == "MOSDAC":
+            nat_calc = await db.execute(text("""
+                SELECT
+                    ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
+                    ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
+                    ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
+                    COUNT(*) as pt_count,
+                    COALESCE(MAX(granule_id), '3SIMG_MOSDAC') as gid,
+                    MAX(observation_time) as latest_time
+                FROM precipitation_observations
+                WHERE observation_time = :obs_time
+                  AND source = 'MOSDAC'
+                  AND precipitation >= 0
+                  AND precipitation < 29990;
+            """), {"obs_time": target_dt})
+        else:
+            nat_calc = await db.execute(text("""
+                SELECT
+                    ROUND(COALESCE(AVG(precipitation), 0)::numeric, 2) as avg_p,
+                    ROUND(COALESCE(MAX(precipitation), 0)::numeric, 2) as max_p,
+                    ROUND(COALESCE(MIN(precipitation), 0)::numeric, 2) as min_p,
+                    COUNT(*) as pt_count,
+                    COALESCE(MAX(granule_id), 'IMERG') as gid,
+                    MAX(observation_time) as latest_time
+                FROM precipitation_observations
+                WHERE observation_time = :obs_time
+                  AND (granule_id LIKE '%.30min%' OR granule_id NOT LIKE '%.%day%')
+                  AND precipitation >= 0
+                  AND precipitation < 29990;
+            """), {"obs_time": target_dt})
+
+        c = nat_calc.first()
 
         max_p = float(c.max_p or 0.0) if c else 0.0
         national_summary = {
@@ -585,7 +562,7 @@ async def get_india_overview(
             "granule_id": c.gid if c else "IMERG",
         }
 
-        # 2. State Summaries (from precomputed weather_region_summary or PostGIS ST_Intersects fallback)
+        # 2. State Summaries (from precomputed weather_region_summary or high-speed BBox fallback)
         states_res = await db.execute(text("""
             SELECT
                 s.state_name,
@@ -625,7 +602,6 @@ async def get_india_overview(
                     p.observation_time = :obs_time
                     AND p.latitude BETWEEN s.min_lat AND s.max_lat
                     AND p.longitude BETWEEN s.min_lon AND s.max_lon
-                    AND ST_Intersects(p.geom, s.geom)
                     {src_fallback}
                     AND p.precipitation >= 0
                     AND p.precipitation < 29990
@@ -633,6 +609,37 @@ async def get_india_overview(
                 ORDER BY max_precipitation DESC NULLS LAST, s.state_name ASC;
             """), {"obs_time": target_dt})
             state_rows = fallback_res.fetchall()
+            if state_rows:
+                try:
+                    await db.execute(text(f"""
+                        INSERT INTO weather_region_summary (
+                            observation_time, granule_id, region_type, region_name, state_name,
+                            avg_precipitation, max_precipitation, min_precipitation, total_points, rain_category
+                        )
+                        SELECT
+                            :obs_time, 'OVERVIEW_ROLLUP', 'STATE', s.state_name, s.state_name,
+                            ROUND(COALESCE(AVG(p.precipitation), 0)::numeric, 2),
+                            ROUND(COALESCE(MAX(p.precipitation), 0)::numeric, 2),
+                            ROUND(COALESCE(MIN(p.precipitation), 0)::numeric, 2),
+                            COUNT(p.latitude),
+                            'Moderate Rain'
+                        FROM boundary_states s
+                        LEFT JOIN precipitation_observations p ON
+                            p.observation_time = :obs_time
+                            AND p.latitude BETWEEN s.min_lat AND s.max_lat
+                            AND p.longitude BETWEEN s.min_lon AND s.max_lon
+                            {src_fallback}
+                            AND p.precipitation >= 0
+                            AND p.precipitation < 29990
+                        GROUP BY s.state_name
+                        ON CONFLICT (observation_time, region_type, region_name, state_name) DO UPDATE
+                        SET avg_precipitation = EXCLUDED.avg_precipitation,
+                            max_precipitation = EXCLUDED.max_precipitation,
+                            total_points = EXCLUDED.total_points;
+                    """), {"obs_time": target_dt})
+                    await db.commit()
+                except Exception as _fb_err:
+                    logger.debug(f"Async regional cache warmup note: {_fb_err}")
 
         state_summaries = [
             {
@@ -785,8 +792,9 @@ async def get_state_weather(
         if not target_dt:
             if active_source == "MOSDAC":
                 time_res = await db.execute(text("""
-                    SELECT observation_time FROM precipitation_observations
-                    WHERE source = 'MOSDAC'
+                    SELECT observation_time FROM ingestion_ledger
+                    WHERE status IN ('COMPLETED', 'PERSISTED')
+                      AND (granule_id LIKE '3SIMG%' OR raw_file_path LIKE '%mosdac%')
                     ORDER BY observation_time DESC
                     LIMIT 1;
                 """))
@@ -852,7 +860,6 @@ async def get_state_weather(
                     o.observation_time = :obs_time
                     AND o.latitude BETWEEN s.min_lat AND s.max_lat
                     AND o.longitude BETWEEN s.min_lon AND s.max_lon
-                    AND ST_Intersects(o.geom, s.geom)
                     {src_filter}
                     AND o.precipitation >= 0
                     AND o.precipitation < 29990
@@ -892,7 +899,6 @@ async def get_state_weather(
             LEFT JOIN state_obs o ON
                 o.latitude BETWEEN d.min_lat AND d.max_lat
                 AND o.longitude BETWEEN d.min_lon AND d.max_lon
-                AND ST_Intersects(o.geom, d.geom)
             WHERE d.state_name ILIKE :st
             GROUP BY d.id, d.district_name, d.min_lat, d.max_lat, d.min_lon, d.max_lon, d.center_lat, d.center_lon
             ORDER BY max_p DESC, avg_p DESC, d.district_name ASC;
@@ -929,7 +935,6 @@ async def get_state_weather(
             WHERE o.observation_time = :obs_time
               AND o.latitude BETWEEN s.min_lat AND s.max_lat
               AND o.longitude BETWEEN s.min_lon AND s.max_lon
-              AND ST_Intersects(o.geom, s.geom)
               {src_filter}
               AND o.precipitation >= 0.1
               AND o.precipitation < 29990
@@ -1026,8 +1031,9 @@ async def get_district_weather(
         if not target_dt:
             if active_source == "MOSDAC":
                 time_res = await db.execute(text("""
-                    SELECT observation_time FROM precipitation_observations
-                    WHERE source = 'MOSDAC'
+                    SELECT observation_time FROM ingestion_ledger
+                    WHERE status IN ('COMPLETED', 'PERSISTED')
+                      AND (granule_id LIKE '3SIMG%' OR raw_file_path LIKE '%mosdac%')
                     ORDER BY observation_time DESC
                     LIMIT 1;
                 """))
@@ -1074,7 +1080,6 @@ async def get_district_weather(
             WHERE o.observation_time = :obs_time
               AND o.latitude BETWEEN d.min_lat AND d.max_lat
               AND o.longitude BETWEEN d.min_lon AND d.max_lon
-              AND ST_Intersects(o.geom, d.geom)
               {src_filter}
               AND o.precipitation >= 0
               AND o.precipitation < 29990

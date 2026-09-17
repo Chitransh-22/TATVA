@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { TatvaLogo } from './TatvaLogo';
 import { FooterInfoModal } from './FooterInfoModal';
 
-export function Footer({ onSelectNav, onOpenIncidentReport }) {
+export function Footer({ onSelectNav, onOpenIncidentReport, onNavigate }) {
   const [infoModalType, setInfoModalType] = useState(null);
 
   return (
@@ -329,74 +329,58 @@ export function Footer({ onSelectNav, onOpenIncidentReport }) {
             >
 
               <li>
-
                 <button
                   onClick={() => {
-                    onSelectNav('analysis');
-
-                    document
-                      .getElementById('analysis-section')
-                      ?.scrollIntoView({
-                        behavior: 'smooth',
-                      });
+                    if (onNavigate) {
+                      onNavigate('/');
+                    }
+                    const el = document.getElementById('map-section');
+                    if (el) el.scrollIntoView({ behavior: 'smooth' });
+                    else window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
-                  className="
-                    cursor-pointer
-                    transition-all
-                    duration-200
-                    hover:translate-x-1
-                    hover:text-blue-600
-                  "
+                  className="cursor-pointer transition-all duration-200 hover:translate-x-1 hover:text-blue-600"
+                >
+                  Live Map
+                </button>
+              </li>
+
+              <li>
+                <button
+                  onClick={() => {
+                    if (onNavigate) {
+                      onNavigate('/analysis');
+                    } else {
+                      onSelectNav('analysis');
+                    }
+                  }}
+                  className="cursor-pointer transition-all duration-200 hover:translate-x-1 hover:text-blue-600"
                 >
                   Analysis
                 </button>
-
               </li>
 
-
               <li>
-
                 <button
                   onClick={onOpenIncidentReport}
-                  className="
-                    cursor-pointer
-                    transition-all
-                    duration-200
-                    hover:translate-x-1
-                    hover:text-blue-600
-                  "
+                  className="cursor-pointer transition-all duration-200 hover:translate-x-1 hover:text-blue-600"
                 >
                   Incident Report
                 </button>
-
               </li>
 
-
               <li>
-
                 <button
                   onClick={() => {
-                    onSelectNav('how-it-works');
-
-                    document
-                      .getElementById('how-it-works-section')
-                      ?.scrollIntoView({
-                        behavior: 'smooth',
-                      });
+                    if (onNavigate) onNavigate('/');
+                    setTimeout(() => {
+                      document.getElementById('how-it-works-section')?.scrollIntoView({ behavior: 'smooth' });
+                    }, 50);
                   }}
-                  className="
-                    cursor-pointer
-                    transition-all
-                    duration-200
-                    hover:translate-x-1
-                    hover:text-blue-600
-                  "
+                  className="cursor-pointer transition-all duration-200 hover:translate-x-1 hover:text-blue-600"
                 >
                   How It Works
                 </button>
-
               </li>
-
             </ul>
 
           </div>

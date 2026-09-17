@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BarChart3, AlertTriangle, Settings, User, Menu, X } from 'lucide-react';
+import { Map, BarChart3, AlertTriangle, Settings, User, Menu, X } from 'lucide-react';
 import { TatvaLogo } from './TatvaLogo';
 
 export function Sidebar({
@@ -7,35 +7,47 @@ export function Sidebar({
   onSelectTab,
   onOpenIncidentReport,
   onOpenAuthModal,
+  currentRoute = '/',
+  onNavigate,
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const handleScrollToTop = () => {
-    const hero = document.getElementById('hero-section');
-    if (hero) {
-      hero.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const handleLogoClick = () => {
+    if (onNavigate) {
+      onNavigate('/');
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
-    document.documentElement.scrollTo({ top: 0, behavior: 'smooth' });
-    document.body.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const navItems = [
     {
+      id: 'home',
+      label: 'Home / Live Map',
+      icon: Map,
+      isActive: currentRoute === '/' && activeTab !== 'how-it-works',
+      onClick: () => {
+        if (onNavigate) onNavigate('/');
+        setMobileMenuOpen(false);
+        const el = document.getElementById('map-section');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+        else window.scrollTo({ top: 0, behavior: 'smooth' });
+      },
+    },
+    {
       id: 'analysis',
       label: 'Analysis',
       icon: BarChart3,
+      isActive: currentRoute === '/analysis',
       onClick: () => {
-        onSelectTab('analysis');
+        if (onNavigate) onNavigate('/analysis');
         setMobileMenuOpen(false);
-        const el = document.getElementById('analysis-section');
-        if (el) el.scrollIntoView({ behavior: 'smooth' });
       },
     },
     {
       id: 'incident',
       label: 'Incident Report',
       icon: AlertTriangle,
+      isActive: false,
       onClick: () => {
         onOpenIncidentReport();
         setMobileMenuOpen(false);
@@ -45,11 +57,20 @@ export function Sidebar({
       id: 'how-it-works',
       label: 'How It Works',
       icon: Settings,
+      isActive: currentRoute === '/' && activeTab === 'how-it-works',
       onClick: () => {
-        onSelectTab('how-it-works');
+        if (currentRoute !== '/') {
+          if (onNavigate) onNavigate('/');
+          setTimeout(() => {
+            const el = document.getElementById('how-it-works-section');
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+          }, 100);
+        } else {
+          onSelectTab('how-it-works');
+          const el = document.getElementById('how-it-works-section');
+          if (el) el.scrollIntoView({ behavior: 'smooth' });
+        }
         setMobileMenuOpen(false);
-        const el = document.getElementById('how-it-works-section');
-        if (el) el.scrollIntoView({ behavior: 'smooth' });
       },
     },
   ];
@@ -59,7 +80,7 @@ export function Sidebar({
       {/* Mobile Top Header (only on small screens) */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-[#081023]/95 backdrop-blur-md border-b border-blue-900/30 px-4 py-3 flex items-center justify-between">
         <button
-          onClick={handleScrollToTop}
+          onClick={handleLogoClick}
           className="flex items-center gap-2 cursor-pointer focus:outline-none"
           aria-label="Scroll to top"
         >
@@ -67,7 +88,7 @@ export function Sidebar({
         </button>
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="p-2 text-slate-200 hover:text-white rounded-lg bg-slate-800/60"
+          className="p-2 text-slate-200 hover:text-white rounded-lg bg-slate-800/60 cursor-pointer"
           aria-label="Toggle Navigation Menu"
         >
           {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -80,12 +101,12 @@ export function Sidebar({
           <nav className="flex flex-col gap-2">
             {navItems.map((item) => {
               const Icon = item.icon;
-              const isActive = activeTab === item.id;
+              const isActive = item.isActive;
               return (
                 <button
                   key={item.id}
                   onClick={item.onClick}
-                  className={`flex items-center gap-3 px-4 py-3.5 rounded-xl font-medium text-sm transition-all duration-200 text-left ${
+                  className={`flex items-center gap-3 px-4 py-3.5 rounded-xl font-medium text-sm transition-all duration-200 text-left cursor-pointer ${
                     isActive
                       ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30'
                       : 'text-slate-300 hover:text-white hover:bg-slate-800/40'
@@ -104,7 +125,7 @@ export function Sidebar({
                 setMobileMenuOpen(false);
                 onOpenAuthModal();
               }}
-              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-slate-300 hover:text-white hover:bg-slate-800/50 text-sm font-medium"
+              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-slate-300 hover:text-white hover:bg-slate-800/50 text-sm font-medium cursor-pointer"
             >
               <User className="w-5 h-5" />
               <span>Login / Signup</span>
@@ -120,8 +141,8 @@ export function Sidebar({
           {/* Logo */}
           <button
             id="sidebar-logo-btn"
-            onClick={handleScrollToTop}
-            aria-label="Scroll to top of TATVA platform"
+            onClick={handleLogoClick}
+            aria-label="Navigate to Home"
             className="cursor-pointer mb-8 pb-4 flex flex-col items-center hover:opacity-95 transition-opacity focus:outline-none"
           >
             <TatvaLogo size="md" showText={true} />
@@ -131,13 +152,13 @@ export function Sidebar({
           <nav className="flex flex-col gap-2.5">
             {navItems.map((item) => {
               const Icon = item.icon;
-              const isActive = activeTab === item.id;
+              const isActive = item.isActive;
               return (
                 <button
                   key={item.id}
                   id={`sidebar-nav-${item.id}`}
                   onClick={item.onClick}
-                  className={`group relative flex items-center gap-3.5 px-4 py-3 rounded-xl font-semibold text-xs tracking-wide transition-all duration-200 text-left ${
+                  className={`group relative flex items-center gap-3.5 px-4 py-3 rounded-xl font-semibold text-xs tracking-wide transition-all duration-200 text-left cursor-pointer ${
                     isActive
                       ? 'bg-blue-600 text-white shadow-md shadow-blue-600/40'
                       : 'text-slate-300 hover:text-white hover:bg-slate-800/50'
@@ -206,7 +227,7 @@ export function Sidebar({
             <button
               id="sidebar-login-btn"
               onClick={onOpenAuthModal}
-              className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-slate-300 hover:text-white hover:bg-slate-800/60 text-xs font-semibold tracking-wide transition-colors"
+              className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-slate-300 hover:text-white hover:bg-slate-800/60 text-xs font-semibold tracking-wide transition-colors cursor-pointer"
             >
               <User className="w-4 h-4 text-slate-400" />
               <span>Login / Signup</span>
